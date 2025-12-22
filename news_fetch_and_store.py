@@ -53,12 +53,13 @@ def init_db():
         """
         CREATE TABLE IF NOT EXISTS news (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            source TEXT NOT NULL,
-            region TEXT NOT NULL,
-            title TEXT NOT NULL,
-            link TEXT NOT NULL UNIQUE,
+            source TEXT,
+            region TEXT,
+            title TEXT,
+            link TEXT UNIQUE,
             published TEXT,
-            fetched_at TEXT NOT NULL
+            fetched_at TEXT
+        , content_en TEXT, content_zh TEXT, content_fetched INTEGER DEFAULT 0, content_updated_at TEXT
         )
         """
     )
