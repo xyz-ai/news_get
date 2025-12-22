@@ -1,0 +1,24 @@
+# RSS / 网络
+feedparser
+requests
+
+# HTML 正文提取
+beautifulsoup4
+readability-lxml
+lxml
+
+# 翻译（英 -> 中）
+googletrans==4.0.0-rc1
+
+# 数据库（Python 自带 sqlite3，无需写）
+# sqlite3
+
+# CLI / 工具
+python-dateutil
+colorama
+
+# GUI（桌面）
+tk
+
+# 可选：后续打包用
+# pyinstaller

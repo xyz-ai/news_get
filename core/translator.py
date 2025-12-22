@@ -1,13 +1,15 @@
+# translator.py
 from googletrans import Translator
 
-translator = Translator()
-_cache = {}
+_translator = Translator()
 
 
-def translate(text):
-    if text in _cache:
-        return _cache[text]
-
-    result = translator.translate(text, src="en", dest="zh-cn").text
-    _cache[text] = result
-    return result
+def translate_en_zh(text: str) -> str:
+    if not text.strip():
+        return text
+    try:
+        return _translator.translate(
+            text, src="en", dest="zh-cn"
+        ).text
+    except Exception:
+        return text
