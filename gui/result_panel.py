@@ -3,7 +3,7 @@ from threading import Thread
 
 from gui.theme import get_theme
 from core.settings import AppSettings
-from core.translator import translate_en_zh
+from core.translator import TranslationError, translate_en_zh
 from core.article_repo import (
     get_article_by_link,
     save_article_en,
@@ -211,15 +211,19 @@ class ResultPanel(tk.Frame):
         try:
             zh = translate_en_zh(article["content_en"])
 
-            # 1️⃣ 写数据库
-            save_article_zh(article["link"], zh)
-
-            # 2️⃣ 更新内存对象（非常关键）
-            article["content_zh"] = zh
+            def apply_translation():
+                # 写数据库前再次确认结果有效
+                if not zh or not zh.strip():
+                    return
+                save_article_zh(article["link"], zh)
+                article["content_zh"] = zh
+                self.render_current_article()
 
             # 3️⃣ 回主线程刷新显示（立即生效）
-            self.after(0, self.render_current_article)
+            self.after(0, apply_translation)
 
+        except TranslationError as e:
+            print(f"Translation failed for {article.get('link')}: {e}")
         except Exception as e:
             print("Translation failed:", e)
         finally:
