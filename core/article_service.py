@@ -6,7 +6,7 @@ from core.article_repo import (
     save_article_zh,
 )
 from core.article_fetcher import fetch_article_content
-from core.translator import translate_en_zh
+from core.translator import TranslationError, translate_en_zh
 from core.settings import AppSettings
 
 
@@ -39,10 +39,13 @@ def get_article(link: str) -> dict:
     # 3️⃣ 自动翻译（但只翻一次，翻完存）
     if AppSettings.auto_translate and not content_zh and content_en:
         try:
-            content_zh = translate_en_zh(content_en)
-            save_article_zh(link, content_zh)
-        except Exception as e:
-            # 不写入 DB，便于后续重试
+            result = translate_en_zh(content_en, link=link)
+            content_zh = result.text
+            if result.translation_status == "success":
+                save_article_zh(link, content_zh)
+        except TranslationError as e:
+            content_zh = str(e)
+        except Exception:
             content_zh = None
 
     return {
