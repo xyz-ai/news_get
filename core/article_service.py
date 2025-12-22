@@ -42,7 +42,8 @@ def get_article(link: str) -> dict:
             content_zh = translate_en_zh(content_en)
             save_article_zh(link, content_zh)
         except Exception as e:
-            content_zh = f"[Translation failed: {e}]"
+            # 不写入 DB，便于后续重试
+            content_zh = None
 
     return {
         "link": link,
