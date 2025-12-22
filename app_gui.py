@@ -175,6 +175,7 @@ class App:
             save_settings()
             self.refresh_theme()
             self.result_panel.refresh_current()
+            self.result_panel.ensure_translation_for_current_article()
 
         for txt, val in [("English", "en"), ("中文", "zh")]:
             tk.Radiobutton(
@@ -202,6 +203,7 @@ class App:
         def change_translate_mode():
             set_translate_mode(mode_var.get())
             self.result_panel.refresh_current()
+            self.result_panel.ensure_translation_for_current_article()
 
         for key in ["mode_en_zh", "mode_zh_only", "mode_zh_en"]:
             tk.Radiobutton(
