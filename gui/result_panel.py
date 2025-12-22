@@ -17,17 +17,16 @@ class ResultPanel(tk.Frame):
         theme = get_theme()
         super().__init__(master, bg=theme["bg"])
 
-        self.theme = theme
         self.data = []                 # [(title, source, region, published, link)]
         self.current_article = None    # dict from DB
 
         # ───────── 左侧：新闻列表 ─────────
-        left = tk.Frame(self, bg=theme["panel"], width=360)
-        left.pack(side="left", fill="y")
-        left.pack_propagate(False)
+        self.left = tk.Frame(self, bg=theme["panel"], width=360)
+        self.left.pack(side="left", fill="y")
+        self.left.pack_propagate(False)
 
         self.listbox = tk.Listbox(
-            left,
+            self.left,
             bg=theme["panel"],
             fg=theme["fg"],
             selectbackground=theme["accent"],
@@ -38,11 +37,11 @@ class ResultPanel(tk.Frame):
         self.listbox.bind("<<ListboxSelect>>", self.show_detail)
 
         # ───────── 右侧：正文区域 ─────────
-        right = tk.Frame(self, bg=theme["bg"])
-        right.pack(side="right", fill="both", expand=True)
+        self.right = tk.Frame(self, bg=theme["bg"])
+        self.right.pack(side="right", fill="both", expand=True)
 
         self.text = tk.Text(
-            right,
+            self.right,
             bg=theme["bg"],
             fg=theme["fg"],
             wrap="word",
@@ -51,6 +50,42 @@ class ResultPanel(tk.Frame):
         self.text.pack(fill="both", expand=True, padx=12, pady=12)
 
         self.text.tag_config("title", font=("Segoe UI", 14, "bold"))
+        self.apply_theme()
+
+    # =================================================
+    # 主题 / 字体
+    # =================================================
+    def apply_theme(self):
+        theme = get_theme()
+        fs = AppSettings.font_size
+
+        self.config(bg=theme["bg"])
+        self.left.config(bg=theme["panel"])
+        self.right.config(bg=theme["bg"])
+
+        self.listbox.config(
+            bg=theme["panel"],
+            fg=theme["fg"],
+            selectbackground=theme["accent"],
+            font=("Segoe UI", fs),
+        )
+
+        self.text.config(
+            bg=theme["bg"],
+            fg=theme["fg"],
+            insertbackground=theme["fg"],
+            font=("Segoe UI", fs),
+        )
+        self.text.tag_config("title", font=("Segoe UI", fs + 2, "bold"))
+
+        # 主题刷新后保留当前文章的渲染
+        self.render_current_article()
+
+    # =================================================
+    # 公共刷新入口
+    # =================================================
+    def refresh_current(self):
+        self.render_current_article()
 
     # =================================================
     # 列表加载（由 QueryPanel 调用）

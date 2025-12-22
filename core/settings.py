@@ -70,9 +70,11 @@ def set_font_size(size: int):
         AppSettings.font_size = size
         save_settings()
 
-def change_translate_mode():
-    AppSettings.translate_mode = mode_var.get()
-    save_settings()
 
-    # 🔥 这句是“你现在缺失的”
-    self.result_panel.render_current_article()
+def set_translate_mode(mode: str):
+    """
+    更新翻译显示模式，并持久化。
+    """
+    if mode in {"en_zh", "zh_only", "zh_en"}:
+        AppSettings.translate_mode = mode
+        save_settings()

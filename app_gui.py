@@ -9,6 +9,7 @@ from core.settings import (
     AppSettings,
     load_settings,
     save_settings,
+    set_translate_mode,
 )
 
 # 启动时加载配置
@@ -199,8 +200,8 @@ class App:
         mode_var = tk.StringVar(value=AppSettings.translate_mode)
 
         def change_translate_mode():
-            AppSettings.translate_mode = mode_var.get()
-            save_settings()
+            set_translate_mode(mode_var.get())
+            self.result_panel.refresh_current()
 
         for key in ["mode_en_zh", "mode_zh_only", "mode_zh_en"]:
             tk.Radiobutton(
