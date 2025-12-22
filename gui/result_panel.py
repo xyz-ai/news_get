@@ -197,6 +197,13 @@ class ResultPanel(tk.Frame):
         if not link or self._translating_link == link:
             return
 
+        if "/news/videos/" in link:
+            message = "Video page – translation not supported"
+            article["content_zh"] = message
+            save_article_zh(link, message)
+            self.render_current_article()
+            return
+
         self._translating_link = link
         Thread(
             target=self._translate_and_save_bg,
@@ -209,21 +216,27 @@ class ResultPanel(tk.Frame):
     # =================================================
     def _translate_and_save_bg(self, article):
         try:
-            zh = translate_en_zh(article["content_en"])
+            zh_result = translate_en_zh(article["content_en"], link=article.get("link"))
+            content_to_save = zh_result.text
+            if zh_result.note:
+                content_to_save = f"[Partial translation] {zh_result.note}\\n\\n{zh_result.text}"
 
             def apply_translation():
                 # 写数据库前再次确认结果有效
-                if not zh or not zh.strip():
+                if not content_to_save or not content_to_save.strip():
                     return
-                save_article_zh(article["link"], zh)
-                article["content_zh"] = zh
+                if zh_result.translation_status == "success":
+                    save_article_zh(article["link"], content_to_save)
+                article["content_zh"] = content_to_save
                 self.render_current_article()
 
             # 3️⃣ 回主线程刷新显示（立即生效）
             self.after(0, apply_translation)
 
         except TranslationError as e:
-            print(f"Translation failed for {article.get('link')}: {e}")
+            article["content_zh"] = str(e)
+            save_article_zh(article["link"], str(e))
+            self.after(0, self.render_current_article)
         except Exception as e:
             print("Translation failed:", e)
         finally:
