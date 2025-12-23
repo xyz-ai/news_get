@@ -95,6 +95,14 @@ class ResultPanel(tk.Frame):
         self.render_current_article()
         self.ensure_translation_for_current_article()
 
+    def clear(self):
+        self.data = []
+        self.current_article = None
+        self._fetching_links.clear()
+        self._translating_link = None
+        self.listbox.delete(0, tk.END)
+        self.text.delete("1.0", tk.END)
+
     # =================================================
     # 列表加载（由 QueryPanel 调用）
     # =================================================
@@ -195,13 +203,6 @@ class ResultPanel(tk.Frame):
 
         link = article.get("link")
         if not link or self._translating_link == link:
-            return
-
-        if "/news/videos/" in link:
-            message = "Video page – translation not supported"
-            article["content_zh"] = message
-            save_article_zh(link, message)
-            self.render_current_article()
             return
 
         self._translating_link = link

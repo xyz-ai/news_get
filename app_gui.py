@@ -1,4 +1,6 @@
 import tkinter as tk
+from tkinter import messagebox
+from threading import Thread
 
 from gui.theme import get_theme
 from gui.query_panel import QueryPanel
@@ -11,6 +13,7 @@ from core.settings import (
     save_settings,
     set_translate_mode,
 )
+from core.article_repo import clear_all_news
 
 # 启动时加载配置
 load_settings()
@@ -78,6 +81,8 @@ class App:
         self.settings_kw = None
         self.settings_days = None
         self.settings_src = None
+        self._fetching_news = False
+        self._clearing_data = False
 
         self.build()
 
@@ -239,6 +244,25 @@ class App:
 
         self.refresh_settings_values()
 
+        # ── Data actions ────────────────
+        tk.Button(
+            win,
+            text=t("fetch_latest"),
+            command=self.fetch_latest_news,
+            relief="flat",
+            bg=theme["button"],
+            fg=theme["fg"],
+        ).pack(anchor="w", padx=20, pady=(12, 4))
+
+        tk.Button(
+            win,
+            text=t("clear_all_data"),
+            command=self.confirm_clear_data,
+            relief="flat",
+            bg=theme["button"],
+            fg=theme["fg"],
+        ).pack(anchor="w", padx=20, pady=4)
+
         # ── Save ──────────────────────
         tk.Button(
             win,
@@ -274,6 +298,55 @@ class App:
         if self.settings_win:
             self.settings_win.destroy()
             self.settings_win = None
+
+    # ──────────────────────────────
+    # Data actions
+    # ──────────────────────────────
+    def fetch_latest_news(self):
+        if self._fetching_news:
+            return
+        self._fetching_news = True
+
+        def run():
+            try:
+                from news_fetch_and_store import fetch_and_store, init_db
+
+                init_db()
+                fetch_and_store()
+            except Exception as e:
+                print("Fetch latest news failed:", e)
+            finally:
+                self._fetching_news = False
+                self.root.after(0, self.query_panel.search)
+
+        Thread(target=run, daemon=True).start()
+
+    def confirm_clear_data(self):
+        if messagebox.askyesno(
+            t("confirm_clear_title"), t("confirm_clear_message")
+        ):
+            self.clear_all_data()
+
+    def clear_all_data(self):
+        if self._clearing_data:
+            return
+        self._clearing_data = True
+        self.root.after(0, self.result_panel.clear)
+
+        def run():
+            try:
+                clear_all_news()
+            except Exception as e:
+                print("Clear data failed:", e)
+            finally:
+                self._clearing_data = False
+                self.root.after(0, self._after_clear_all_data)
+
+        Thread(target=run, daemon=True).start()
+
+    def _after_clear_all_data(self):
+        self.result_panel.clear()
+        self.query_panel.sync_defaults()
 
 
 # ─────────────────────────────────────

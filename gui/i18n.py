@@ -21,6 +21,10 @@ TEXT = {
         "mode_en_zh": "English → Chinese",
         "mode_zh_only": "Chinese only",
         "mode_zh_en": "Chinese → English",
+        "fetch_latest": "Fetch Latest News",
+        "clear_all_data": "Clear All Data",
+        "confirm_clear_title": "Confirm",
+        "confirm_clear_message": "Delete all saved news and articles?",
     },
     "zh": {
         "title": "新闻阅读器",
@@ -42,6 +46,10 @@ TEXT = {
         "mode_en_zh": "英文在前，中文在后",
         "mode_zh_only": "仅显示中文",
         "mode_zh_en": "中文在前，英文在后",
+        "fetch_latest": "获取最新新闻",
+        "clear_all_data": "清空所有数据",
+        "confirm_clear_title": "确认",
+        "confirm_clear_message": "删除所有已保存的新闻与正文？",
     },
 }
 
