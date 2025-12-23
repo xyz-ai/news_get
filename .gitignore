@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.pyc
+
+# Virtualenv
+news_get_venv/
+venv/
+
+# Database (如果不想同步本地数据)
+*.db
+
+# OS
+.DS_Store
+Thumbs.db
