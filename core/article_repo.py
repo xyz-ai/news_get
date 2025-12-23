@@ -78,3 +78,15 @@ def save_article_zh(link: str, content_zh: str):
 
     conn.commit()
     conn.close()
+
+
+def clear_all_news():
+    """
+    删除所有新闻数据与正文缓存。
+    """
+    conn = _get_conn()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM news")
+    conn.commit()
+    cur.execute("VACUUM")
+    conn.close()

@@ -15,16 +15,37 @@ def fetch_article_content(url: str) -> str:
         )
         resp.raise_for_status()
 
-        doc = Document(resp.text)
+        soup_raw = BeautifulSoup(resp.text, "html.parser")
+
+        # Remove media/script tags before readability to avoid video-only text
+        for tag in soup_raw.find_all(
+            ["script", "style", "noscript", "video", "iframe", "source", "track"]
+        ):
+            tag.decompose()
+        for fig in soup_raw.find_all("figure", class_="media"):
+            fig.decompose()
+
+        doc = Document(str(soup_raw))
         html = doc.summary(html_partial=True)
 
         soup = BeautifulSoup(html, "html.parser")
 
+        for tag in soup(
+            ["script", "style", "noscript", "video", "iframe", "source", "track"]
+        ):
+            tag.decompose()
+        for fig in soup.find_all("figure", class_="media"):
+            fig.decompose()
+
         paragraphs = []
         for p in soup.find_all("p"):
-            text = p.get_text(strip=True)
+            text = p.get_text(" ", strip=True)
             if text:
                 paragraphs.append(text)
+
+        if not paragraphs:
+            text = soup.get_text("\n")
+            paragraphs = [line.strip() for line in text.splitlines() if line.strip()]
 
         return "\n\n".join(paragraphs)
 
