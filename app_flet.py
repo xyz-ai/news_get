@@ -359,7 +359,11 @@ class NewsDeskApp:
     # ------------------------------------------------------------------ Settings
     def _open_settings(self, _) -> None:
         palette = self._palette()
-        self.settings_dialog = None
+        if self.settings_dialog:
+            self.page.dialog = self.settings_dialog
+            self.settings_dialog.open = True
+            self.page.update()
+            return
 
         theme_switch = ft.Switch(
             label=t("toggle_theme"),
@@ -413,8 +417,6 @@ class NewsDeskApp:
     def _close_settings(self, _) -> None:
         if self.settings_dialog:
             self.settings_dialog.open = False
-            self.page.dialog = None
-            self.settings_dialog = None
             self.page.update()
 
     def _handle_theme_toggle(self, _) -> None:
