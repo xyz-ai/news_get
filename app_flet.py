@@ -5,8 +5,6 @@ from typing import Any, Callable, Iterable
 
 import flet as ft
 
-from flet.controls import page
-
 from core.article_fetcher import fetch_article_content
 from core.article_repo import (
     clear_all_news,
@@ -30,20 +28,23 @@ load_settings()
 
 
 def _run_in_executor(func: Callable[[], Any]) -> asyncio.Future:
-    # ✅ 必须在 async 上下文中使用 get_running_loop()
     loop = asyncio.get_running_loop()
     return loop.run_in_executor(None, func)
 
 
 class NewsDeskApp:
+    """
+    Modern Flet shell that layers on top of the existing core logic.
+    All network / DB work is pushed into the executor to keep the UI responsive.
+    """
+
     def __init__(self, page: ft.Page):
         self.page = page
         self.page.title = "News Desk"
         self.page.padding = 0
+        self.page.scroll = ft.ScrollMode.AUTO
         self.page.horizontal_alignment = "stretch"
         self.page.vertical_alignment = "stretch"
-        self.page.scroll = "adaptive"
-        self._apply_theme()
 
         self.news_rows: list[tuple] = []
         self.current_article: dict[str, Any] | None = None
@@ -52,83 +53,98 @@ class NewsDeskApp:
         self._translating_link: str | None = None
         self._settings_dialog: ft.AlertDialog | None = None
 
-        # ✅ 事件处理函数直接做 async（不要 page.run_task + lambda）
+        # Controls
         self.search_field = ft.TextField(
             value=AppSettings.default_keyword,
             hint_text=t("keyword"),
             prefix_icon=ft.Icons.SEARCH,
-            border_radius=8,
+            border_radius=12,
             dense=True,
             filled=True,
-            on_submit=self._on_search_submit_async,   # ✅ async handler
+            on_submit=self._on_search_submit_async,
             expand=True,
         )
         self.search_button = ft.FilledButton(
             text=t("search"),
             icon=ft.Icons.SEARCH,
-            on_click=self._on_search_click_async,     # ✅ async handler
+            on_click=self._on_search_click_async,
             height=44,
+        )
+        self.refresh_button = ft.IconButton(
+            icon=ft.Icons.REFRESH_ROUNDED,
+            tooltip=t("fetch_latest"),
+            on_click=lambda e: self.page.run_task(self._fetch_latest),
         )
         self.settings_button = ft.IconButton(
             icon=ft.Icons.SETTINGS_OUTLINED,
             tooltip=t("settings"),
-            on_click=self._open_settings,             # sync ok（只是打开弹窗）
+            on_click=self._open_settings,
         )
-
         self.news_list = ft.ListView(
             spacing=8,
-            padding=12,
+            padding=0,
             expand=True,
-            auto_scroll=False,
         )
-
+        self.list_header = ft.Text(
+            value=t("query"),
+            size=13,
+            weight=ft.FontWeight.W_600,
+        )
+        self.search_hint = ft.Text(
+            value=t("query_hint"),
+            size=11,
+            color=get_theme().get("muted", "#9aa0b4"),
+        )
         self.article_title = ft.Text(
             value=t("no_article_selected"),
             weight=ft.FontWeight.W_700,
-            size=20,
-            color=get_theme()["fg"],
+            size=22,
         )
-        self.article_meta = ft.Text(value="", color=get_theme().get("muted", "#888888"))
+        self.article_meta = ft.Text(value="", size=12)
+        self.translation_mode_dropdown = ft.Dropdown(
+            width=260,
+            options=[
+                ft.dropdown.Option("en_only", t("mode_en_only")),
+                ft.dropdown.Option("en_zh", t("mode_en_zh")),
+                ft.dropdown.Option("zh_only", t("mode_zh_only")),
+                ft.dropdown.Option("zh_en", t("mode_zh_en")),
+            ],
+            value=AppSettings.translate_mode
+            if AppSettings.translate_mode in {"en_zh", "zh_only", "zh_en"}
+            else "en_only",
+            on_change=self._change_translate_mode,
+            dense=True,
+        )
+        self.auto_translate_switch = ft.Switch(
+            label=t("auto_translate"),
+            value=getattr(AppSettings, "auto_translate", True),
+            on_change=self._toggle_auto_translate,
+        )
         self.article_body = ft.Markdown(
             value="",
             selectable=True,
             extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
         )
+        self.article_status = ft.Text(value="", size=12)
+        self.search_progress = ft.ProgressBar(visible=False, width=180)
+        self.article_progress = ft.ProgressRing(visible=False)
+        self.toast = ft.SnackBar(open=False)
 
-        # ✅ 滚动要加在 Column/ListView 上，不是 Markdown/Container
-        self.article_body_scroller = ft.Column(
-            controls=[self.article_body],
+        self.layout = ft.Container(
             expand=True,
-            scroll=ft.ScrollMode.AUTO,
+            content=ft.Column(
+                spacing=0,
+                controls=[self._build_top_bar(), self._build_body()],
+            ),
         )
 
-        self.article_body_container = ft.Container(
-            content=self.article_body_scroller,
-            expand=True,
-        )
-
-        self.article_status = ft.Text(
-            value="",
-            color=get_theme().get("muted", "#888888"),
-            size=12,
-        )
-
-        self.layout = ft.Column(
-            spacing=0,
-            controls=[
-                self._build_top_bar(),
-                self._build_body(),
-            ],
-            expand=True,
-        )
-
+        self._apply_theme()
         self.page.add(self.layout)
+        self.page.overlay.append(self.toast)
         self.page.update()
-
-        # ✅ 这里可以用 run_task：传协程函数（不是调用结果）
         self.page.run_task(self._initial_search)
 
-    # ------------------------------------------------------------------ UI
+    # ------------------------------------------------------------------ Theme helpers
     def _palette(self):
         theme = get_theme()
         return {
@@ -142,10 +158,10 @@ class NewsDeskApp:
         }
 
     def _apply_theme(self):
+        palette = self._palette()
         self.page.theme_mode = (
             ft.ThemeMode.DARK if AppSettings.theme == "dark" else ft.ThemeMode.LIGHT
         )
-        palette = get_theme()
         self.page.bgcolor = palette["bg"]
         self.page.theme = ft.Theme(
             color_scheme=ft.ColorScheme(
@@ -154,75 +170,136 @@ class NewsDeskApp:
             ),
             font_family="Segoe UI",
         )
-
-    def _build_top_bar(self) -> ft.Container:
-        palette = self._palette()
-        self.search_field.fill_color = palette["bg"]
+        # Update shared colors
+        self.search_field.fill_color = palette["panel"]
         self.search_field.border_color = palette["border"]
         self.search_field.cursor_color = palette["fg"]
         self.search_field.color = palette["fg"]
+        self.list_header.color = palette["fg"]
+        self.article_title.color = palette["fg"]
+        self.article_meta.color = palette["muted"]
+        self.article_status.color = palette["muted"]
+        self.search_hint.color = palette["muted"]
 
+    # ------------------------------------------------------------------ UI assembly
+    def _build_top_bar(self) -> ft.Container:
+        palette = self._palette()
         return ft.Container(
-            padding=ft.padding.symmetric(horizontal=16, vertical=12),
             bgcolor=palette["panel"],
+            padding=ft.padding.symmetric(horizontal=16, vertical=14),
             content=ft.Row(
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                spacing=12,
                 controls=[
-                    ft.Text(
-                        t("title"),
-                        weight=ft.FontWeight.W_700,
-                        size=18,
-                        color=palette["fg"],
+                    ft.Row(
+                        spacing=10,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        controls=[
+                            ft.Container(
+                                bgcolor=palette["panel_alt"],
+                                border_radius=12,
+                                padding=ft.padding.symmetric(horizontal=12, vertical=8),
+                                content=ft.Text(
+                                    t("title"),
+                                    size=18,
+                                    weight=ft.FontWeight.W_700,
+                                    color=palette["fg"],
+                                ),
+                            )
+                        ],
                     ),
                     self.search_field,
-                    self.search_button,
-                    self.settings_button,
+                    ft.Container(self.search_button, width=120),
+                    ft.Container(
+                        content=ft.Row(
+                            spacing=6,
+                            controls=[
+                                self.search_progress,
+                                self.refresh_button,
+                                ft.IconButton(
+                                    icon=ft.Icons.DARK_MODE_ROUNDED
+                                    if AppSettings.theme == "dark"
+                                    else ft.Icons.LIGHT_MODE,
+                                    tooltip=t("toggle_theme"),
+                                    on_click=self._toggle_theme,
+                                ),
+                                self.settings_button,
+                            ],
+                        )
+                    ),
                 ],
-                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
             ),
         )
 
     def _build_body(self) -> ft.Container:
         palette = self._palette()
-        left_panel = ft.Container(
-            width=340,
+        news_panel = ft.Container(
+            width=360,
             bgcolor=palette["panel"],
             border=ft.border.only(right=ft.BorderSide(1, palette["border"])),
+            padding=ft.padding.all(16),
             content=ft.Column(
-                controls=[
-                    ft.Text(
-                        t("query"),
-                        size=14,
-                        weight=ft.FontWeight.W_600,
-                        color=palette["muted"],
-                    ),
-                    self.news_list,
-                ],
-                spacing=10,
                 expand=True,
+                spacing=12,
+                controls=[
+                    self.list_header,
+                    self.search_hint,
+                    ft.Container(
+                        border_radius=12,
+                        bgcolor=palette["panel_alt"],
+                        padding=12,
+                        content=self.news_list,
+                        expand=True,
+                    ),
+                ],
             ),
         )
 
-        article_area = ft.Container(
+        article_panel = ft.Container(
+            expand=True,
             bgcolor=palette["bg"],
             padding=ft.padding.only(left=18, right=18, top=12, bottom=18),
-            expand=True,
             content=ft.Column(
+                expand=True,
+                spacing=12,
                 controls=[
-                    self.article_title,
-                    self.article_meta,
-                    ft.Container(height=8),
+                    ft.Row(
+                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        controls=[
+                            ft.Column(
+                                spacing=4,
+                                controls=[self.article_title, self.article_meta],
+                            ),
+                            ft.Row(
+                                spacing=12,
+                                controls=[
+                                    self.translation_mode_dropdown,
+                                    self.auto_translate_switch,
+                                    self.article_progress,
+                                ],
+                            ),
+                        ],
+                    ),
                     ft.Container(
-                        content=self.article_body_container,
                         bgcolor=palette["panel"],
                         border_radius=12,
-                        padding=0,
+                        padding=12,
                         expand=True,
+                        content=ft.Column(
+                            expand=True,
+                            spacing=8,
+                            controls=[
+                                ft.Container(
+                                    content=self.article_body,
+                                    expand=True,
+                                    border_radius=8,
+                                ),
+                            ],
+                        ),
                     ),
                     self.article_status,
                 ],
-                spacing=10,
-                expand=True,
             ),
         )
 
@@ -230,9 +307,9 @@ class NewsDeskApp:
             expand=True,
             bgcolor=palette["bg"],
             content=ft.Row(
-                controls=[left_panel, article_area],
-                spacing=0,
                 expand=True,
+                spacing=0,
+                controls=[news_panel, article_panel],
             ),
         )
 
@@ -248,7 +325,7 @@ class NewsDeskApp:
 
     async def _search(self, keyword: str | None):
         self.search_button.disabled = True
-        self.search_button.icon = ft.Icons.HOURGLASS_BOTTOM
+        self.search_progress.visible = True
         self.article_status.value = ""
         self.page.update()
 
@@ -257,12 +334,14 @@ class NewsDeskApp:
             rows = await _run_in_executor(lambda: query_news(keyword=cleaned_kw or None))
             self.news_rows = rows or []
             self._render_news_list(select_first=True)
+            if not self.news_rows:
+                self._show_toast(t("no_article_selected"))
         except Exception as e:
             self.article_status.value = f"Search failed: {e}"
-            self.page.update()
+            self._show_toast(f"Search failed: {e}")
         finally:
             self.search_button.disabled = False
-            self.search_button.icon = ft.Icons.SEARCH
+            self.search_progress.visible = False
             self.page.update()
 
     def _render_news_list(self, select_first: bool = False):
@@ -277,17 +356,17 @@ class NewsDeskApp:
 
             tile = ft.Container(
                 data=link,
-                bgcolor=palette["panel"],
-                border_radius=10,
+                bgcolor=palette["panel_alt"],
+                border_radius=12,
                 padding=12,
                 ink=True,
-                on_click=_click,  # ✅ 直接 async handler
+                on_click=_click,
                 content=ft.Column(
-                    spacing=4,
+                    spacing=6,
                     controls=[
                         ft.Text(
                             title,
-                            weight=ft.FontWeight.W_600,
+                            weight=ft.FontWeight.W_700,
                             color=palette["fg"],
                             size=14,
                             max_lines=2,
@@ -306,7 +385,6 @@ class NewsDeskApp:
         self._update_list_highlight()
 
         if select_first and self.news_rows:
-            # ✅ 这里也别用 run_task；直接 schedule
             async def _select_first():
                 await self._handle_select(self.news_rows[0])
 
@@ -318,7 +396,11 @@ class NewsDeskApp:
         palette = self._palette()
         for tile in self.news_list.controls:
             link = tile.data
-            tile.bgcolor = palette["panel_alt"] if link == self.selected_link else palette["panel"]
+            tile.bgcolor = (
+                palette["panel"]
+                if link == self.selected_link
+                else palette["panel_alt"]
+            )
             if isinstance(tile.content, ft.Column):
                 for idx, child in enumerate(tile.content.controls):
                     if isinstance(child, ft.Text):
@@ -329,14 +411,17 @@ class NewsDeskApp:
         title, source, region, published, link = row
         self.selected_link = link
         self._update_list_highlight()
+        self.article_progress.visible = True
+        self.article_status.value = t("loading_article")
+        self.page.update()
 
         article = await _run_in_executor(lambda: get_article_by_link(link))
         if not article:
             self.article_title.value = title
             self.article_meta.value = f"{source} · {region} · {published}"
             self.article_body.value = t("loading_article")
-            self.article_status.value = t("loading_article")
             self.page.update()
+            self.article_progress.visible = False
             return
 
         self.current_article = article
@@ -345,12 +430,13 @@ class NewsDeskApp:
         self._render_article()
         self.page.update()
 
-        # ✅ 没英文正文则抓取
         if not article.get("content_en") and link not in self._fetching_links:
             self._fetching_links.add(link)
             asyncio.create_task(self._fetch_content(article))
+        else:
+            self.article_progress.visible = False
+            self.page.update()
 
-        # ✅ 需要时翻译
         self._ensure_translation(article)
 
     def _render_article(self):
@@ -378,11 +464,13 @@ class NewsDeskApp:
         else:
             sections.append(content_en or t("loading_article"))
 
+        self.translation_mode_dropdown.value = mode if mode in {
+            "en_zh", "zh_only", "zh_en"
+        } else "en_only"
         self.article_body.value = "\n\n".join(sections)
         self.article_body.code_theme = (
             "atom-one-dark" if AppSettings.theme == "dark" else "atom-one-light"
         )
-
         self.article_status.value = (
             t("translation")
             + ": "
@@ -393,7 +481,7 @@ class NewsDeskApp:
                 "zh_en": t("mode_zh_en"),
             }.get(mode, t("mode_en_only"))
         )
-
+        self.article_progress.visible = False
         self.page.update()
 
     async def _fetch_content(self, article: dict[str, Any]):
@@ -410,6 +498,7 @@ class NewsDeskApp:
             self._ensure_translation(article)
         finally:
             self._fetching_links.discard(link)
+            self.article_progress.visible = False
             self.page.update()
 
     def _ensure_translation(self, article: dict[str, Any]):
@@ -427,7 +516,10 @@ class NewsDeskApp:
             return
 
         self._translating_link = link
+        self.article_status.value = t("auto_translate")
+        self.article_progress.visible = True
         asyncio.create_task(self._translate_article(article))
+        self.page.update()
 
     async def _translate_article(self, article: dict[str, Any]):
         link = article.get("link")
@@ -437,7 +529,9 @@ class NewsDeskApp:
             )
             content_to_save = zh_result.text
             if zh_result.note:
-                content_to_save = f"[Partial translation] {zh_result.note}\n\n{zh_result.text}"
+                content_to_save = (
+                    f"[Partial translation] {zh_result.note}\n\n{zh_result.text}"
+                )
 
             if content_to_save and content_to_save.strip():
                 if zh_result.translation_status == "success":
@@ -454,6 +548,7 @@ class NewsDeskApp:
             self._render_article()
         finally:
             self._translating_link = None
+            self.article_progress.visible = False
             self.page.update()
 
     # ------------------------------------------------------------------ Settings
@@ -481,8 +576,12 @@ class NewsDeskApp:
             on_change=self._change_language,
         )
         mode_selector = ft.RadioGroup(
-            value=AppSettings.translate_mode if AppSettings.translate_mode in {"en_zh", "zh_only", "zh_en"} else "en_only",
-            content=ft.Column(controls=[ft.Radio(value=k, label=lb) for k, lb in translate_modes]),
+            value=AppSettings.translate_mode
+            if AppSettings.translate_mode in {"en_zh", "zh_only", "zh_en"}
+            else "en_only",
+            content=ft.Column(
+                controls=[ft.Radio(value=k, label=lb) for k, lb in translate_modes]
+            ),
             on_change=self._change_translate_mode,
         )
         auto_translate_switch = ft.Switch(
@@ -493,7 +592,9 @@ class NewsDeskApp:
 
         def update_days(e2: ft.ControlEvent):
             try:
-                AppSettings.default_days = int(e2.control.value or AppSettings.default_days)
+                AppSettings.default_days = int(
+                    e2.control.value or AppSettings.default_days
+                )
             except ValueError:
                 e2.control.value = str(AppSettings.default_days)
                 e2.control.update()
@@ -504,7 +605,9 @@ class NewsDeskApp:
                 ft.TextField(
                     label=t("keyword"),
                     value=AppSettings.default_keyword,
-                    on_change=lambda ev: setattr(AppSettings, "default_keyword", ev.control.value),
+                    on_change=lambda ev: setattr(
+                        AppSettings, "default_keyword", ev.control.value
+                    ),
                 ),
                 ft.TextField(
                     label=t("days"),
@@ -521,7 +624,9 @@ class NewsDeskApp:
                         ft.dropdown.Option("Fox"),
                     ],
                     value=AppSettings.default_source,
-                    on_change=lambda ev: setattr(AppSettings, "default_source", ev.control.value),
+                    on_change=lambda ev: setattr(
+                        AppSettings, "default_source", ev.control.value
+                    ),
                 ),
             ],
         )
@@ -537,12 +642,12 @@ class NewsDeskApp:
                 ft.FilledButton(
                     text=t("fetch_latest"),
                     icon=ft.Icons.UPDATE,
-                    on_click=_fetch_latest_click,   # ✅ async
+                    on_click=_fetch_latest_click,
                 ),
                 ft.OutlinedButton(
                     text=t("clear_all_data"),
                     icon=ft.Icons.DELETE_SWEEP,
-                    on_click=_clear_all_click,      # ✅ async
+                    on_click=_clear_all_click,
                 ),
             ],
             spacing=12,
@@ -573,7 +678,7 @@ class NewsDeskApp:
                     ],
                 ),
             ],
-            width=520,
+            width=540,
             scroll=ft.ScrollMode.AUTO,
         )
 
@@ -624,23 +729,31 @@ class NewsDeskApp:
     def _refresh_labels(self):
         self.search_field.hint_text = t("keyword")
         self.search_button.text = t("search")
+        self.list_header.value = t("query")
+        self.search_hint.value = t("query_hint")
         self.article_status.value = ""
+        self.translation_mode_dropdown.options = [
+            ft.dropdown.Option("en_only", t("mode_en_only")),
+            ft.dropdown.Option("en_zh", t("mode_en_zh")),
+            ft.dropdown.Option("zh_only", t("mode_zh_only")),
+            ft.dropdown.Option("zh_en", t("mode_zh_en")),
+        ]
+        self.auto_translate_switch.label = t("auto_translate")
         self._rebuild_shell()
 
     # ------------------------------------------------------------------ Data actions
     async def _fetch_latest(self):
-        progress = ft.SnackBar(ft.Text(t("fetch_latest") + "..."), open=True)
-        self.page.snack_bar = progress
-        self.page.update()
+        self._show_toast(t("fetch_latest") + "...")
         try:
             await _run_in_executor(self._run_fetch_latest)
             await self._search(self.search_field.value.strip())
         finally:
-            progress.open = False
+            self.toast.open = False
             self.page.update()
 
     def _run_fetch_latest(self):
         from news_fetch_and_store import fetch_and_store, init_db
+
         init_db()
         fetch_and_store()
 
@@ -659,20 +772,25 @@ class NewsDeskApp:
         self.page.update()
 
     def _rebuild_shell(self):
-        self.layout.controls[0] = self._build_top_bar()
-        self.layout.controls[1] = self._build_body()
+        self.layout.content.controls[0] = self._build_top_bar()
+        self.layout.content.controls[1] = self._build_body()
         self.page.controls.clear()
         self.page.add(self.layout)
+        self._apply_theme()
         self._update_list_highlight()
         self._render_article()
         self.page.update()
 
-# ================== APP ENTRY ==================
+    def _show_toast(self, message: str):
+        self.toast.content = ft.Text(message)
+        self.toast.open = True
+        self.page.update()
 
-def main(page: ft.Page):
+
+# ================== APP ENTRY ==================
+async def main(page: ft.Page):
     NewsDeskApp(page)
 
 
 if __name__ == "__main__":
-    ft.run(main)
-
+    ft.app(target=main)
