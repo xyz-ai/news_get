@@ -78,3 +78,34 @@ This project intentionally avoids over-engineering and heavy frameworks.
 ├── gui/                     # UI helpers (theme, i18n)
 ├── requirements.txt         # Locked dependencies for v1.0
 └── README.md
+🧪 Development Setup
+bash
+复制代码
+python -m venv venv
+source venv/bin/activate  # Windows: venv\Scripts\activate
+pip install -r requirements.txt
+python main.py
+🏷 Versioning
+v1.0 – Initial stable release
+
+Auto-fetch & auto-refresh
+
+Desktop & Android builds
+
+Locked dependencies
+
+Future versions will be developed on separate branches.
+
+⚠ Notes
+This project intentionally locks Flet to 0.28.3 for stability.
+
+Newer Flet APIs are not compatible with this codebase.
+
+RSS sources may change availability over time.
+
+📜 License
+MIT License (or your preferred license)
+
+🙏 Acknowledgement
+This project was completed as a focused, independent effort.
+It reflects a belief that useful software does not need to be complicated.
