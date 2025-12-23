@@ -5,7 +5,12 @@ from typing import Any, Iterable
 import flet as ft
 
 from core.article_fetcher import fetch_article_content
-from core.article_repo import clear_all_news, get_article_by_link, save_article_en
+from core.article_repo import (
+    clear_all_news,
+    get_article_by_link,
+    save_article_en,
+    save_article_zh,
+)
 from core.query_engine import query_news
 from core.settings import (
     AppSettings,
@@ -14,6 +19,7 @@ from core.settings import (
     set_translate_mode,
     toggle_theme,
 )
+from core.translator import TranslationError, translate_en_zh
 from gui.i18n import t
 from gui.theme import get_theme
 
@@ -273,6 +279,7 @@ class NewsDeskApp:
             article["content_en"] = content
             self.article_status.value = ""
 
+        self._ensure_translation(article)
         self._render_article_content()
         self.page.update()
 
@@ -352,6 +359,11 @@ class NewsDeskApp:
     # ------------------------------------------------------------------ Settings
     def _open_settings(self, _) -> None:
         palette = self._palette()
+        if self.settings_dialog:
+            self.page.dialog = self.settings_dialog
+            self.settings_dialog.open = True
+            self.page.update()
+            return
 
         theme_switch = ft.Switch(
             label=t("toggle_theme"),
@@ -423,6 +435,8 @@ class NewsDeskApp:
             AppSettings.translate_mode = "en_only"
             save_settings()
         self.translation_indicator.value = self._translate_mode_label()
+        if self.current_article:
+            self._ensure_translation(self.current_article)
         self._render_article_content()
         self.page.update()
 
@@ -433,6 +447,33 @@ class NewsDeskApp:
         self.selected_link = None
         self._clear_article_view(message=t("clear_all_data"))
         self.page.update()
+
+    def _ensure_translation(self, article: dict[str, Any]) -> None:
+        mode = AppSettings.translate_mode
+        needs_chinese = mode in {"en_zh", "zh_only", "zh_en"}
+        if not needs_chinese:
+            return
+        if article.get("content_zh"):
+            return
+        if not article.get("content_en"):
+            return
+
+        self.article_status.value = t("translation") + "..."
+        self.page.update()
+        try:
+            result = translate_en_zh(article.get("content_en", ""), link=article.get("link"))
+            content = result.text
+            if result.note:
+                content = f"[{result.note}]\n\n{content}"
+            save_article_zh(article.get("link", ""), content)
+            article["content_zh"] = content
+            self.article_status.value = ""
+        except TranslationError as exc:
+            article["content_zh"] = str(exc)
+            self.article_status.value = str(exc)
+        except Exception as exc:  # pragma: no cover - runtime guardrail
+            article["content_zh"] = f"[Translation failed] {exc}"
+            self.article_status.value = article["content_zh"]
 
     def _refresh_colors(self) -> None:
         palette = self._palette()
@@ -452,6 +493,7 @@ class NewsDeskApp:
         self.article_meta.color = palette["muted"]
         self.translation_indicator.color = palette["muted"]
         self.article_status.color = palette["muted"]
+        self.settings_button.icon_color = palette["fg"]
 
     # ------------------------------------------------------------------ Helpers
     def _translate_mode_label(self) -> str:
