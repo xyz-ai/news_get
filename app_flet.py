@@ -5,6 +5,8 @@ from typing import Any, Callable, Iterable
 
 import flet as ft
 
+from flet.controls import page
+
 from core.article_fetcher import fetch_article_content
 from core.article_repo import (
     clear_all_news,
@@ -24,12 +26,12 @@ from core.translator import TranslationError, translate_en_zh
 from gui.i18n import t
 from gui.theme import get_theme
 
-
 load_settings()
 
 
 def _run_in_executor(func: Callable[[], Any]) -> asyncio.Future:
-    loop = asyncio.get_event_loop()
+    # ✅ 必须在 async 上下文中使用 get_running_loop()
+    loop = asyncio.get_running_loop()
     return loop.run_in_executor(None, func)
 
 
@@ -50,6 +52,7 @@ class NewsDeskApp:
         self._translating_link: str | None = None
         self._settings_dialog: ft.AlertDialog | None = None
 
+        # ✅ 事件处理函数直接做 async（不要 page.run_task + lambda）
         self.search_field = ft.TextField(
             value=AppSettings.default_keyword,
             hint_text=t("keyword"),
@@ -57,19 +60,19 @@ class NewsDeskApp:
             border_radius=8,
             dense=True,
             filled=True,
-            on_submit=self._on_search_submit,
+            on_submit=self._on_search_submit_async,   # ✅ async handler
             expand=True,
         )
         self.search_button = ft.FilledButton(
             text=t("search"),
             icon=ft.Icons.SEARCH,
-            on_click=self._on_search_submit,
+            on_click=self._on_search_click_async,     # ✅ async handler
             height=44,
         )
         self.settings_button = ft.IconButton(
             icon=ft.Icons.SETTINGS_OUTLINED,
             tooltip=t("settings"),
-            on_click=self._open_settings,
+            on_click=self._open_settings,             # sync ok（只是打开弹窗）
         )
 
         self.news_list = ft.ListView(
@@ -85,19 +88,28 @@ class NewsDeskApp:
             size=20,
             color=get_theme()["fg"],
         )
-        self.article_meta = ft.Text(value="", color=get_theme()["muted"])
+        self.article_meta = ft.Text(value="", color=get_theme().get("muted", "#888888"))
         self.article_body = ft.Markdown(
             value="",
             selectable=True,
-            on_tap_link=lambda e: self.page.launch_url(e.data),
-            code_theme="atom-one-dark" if AppSettings.theme == "dark" else "atom-one-light",
             extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
+        )
+
+        # ✅ 滚动要加在 Column/ListView 上，不是 Markdown/Container
+        self.article_body_scroller = ft.Column(
+            controls=[self.article_body],
             expand=True,
             scroll=ft.ScrollMode.AUTO,
         )
+
+        self.article_body_container = ft.Container(
+            content=self.article_body_scroller,
+            expand=True,
+        )
+
         self.article_status = ft.Text(
             value="",
-            color=get_theme()["muted"],
+            color=get_theme().get("muted", "#888888"),
             size=12,
         )
 
@@ -112,7 +124,9 @@ class NewsDeskApp:
 
         self.page.add(self.layout)
         self.page.update()
-        self.page.run_task(self._initial_search())
+
+        # ✅ 这里可以用 run_task：传协程函数（不是调用结果）
+        self.page.run_task(self._initial_search)
 
     # ------------------------------------------------------------------ UI
     def _palette(self):
@@ -120,9 +134,9 @@ class NewsDeskApp:
         return {
             "bg": theme["bg"],
             "panel": theme["panel"],
-            "panel_alt": theme["button"],
+            "panel_alt": theme.get("button", theme["panel"]),
             "fg": theme["fg"],
-            "muted": theme["muted"],
+            "muted": theme.get("muted", "#888888"),
             "accent": theme["accent"],
             "border": theme["border"],
         }
@@ -199,10 +213,10 @@ class NewsDeskApp:
                     self.article_meta,
                     ft.Container(height=8),
                     ft.Container(
-                        content=self.article_body,
+                        content=self.article_body_container,
                         bgcolor=palette["panel"],
                         border_radius=12,
-                        padding=ft.padding.all(16),
+                        padding=0,
                         expand=True,
                     ),
                     self.article_status,
@@ -226,40 +240,48 @@ class NewsDeskApp:
     async def _initial_search(self):
         await self._search(keyword=AppSettings.default_keyword)
 
-    def _on_search_submit(self, _):
-        self.page.run_task(self._search(self.search_field.value.strip()))
+    async def _on_search_submit_async(self, e):
+        await self._search(self.search_field.value.strip())
+
+    async def _on_search_click_async(self, e):
+        await self._search(self.search_field.value.strip())
 
     async def _search(self, keyword: str | None):
         self.search_button.disabled = True
         self.search_button.icon = ft.Icons.HOURGLASS_BOTTOM
-        self.search_button.update()
-        await self.page.update_async()
-
-        cleaned_kw = keyword or ""
         self.article_status.value = ""
+        self.page.update()
+
+        cleaned_kw = (keyword or "").strip()
         try:
             rows = await _run_in_executor(lambda: query_news(keyword=cleaned_kw or None))
             self.news_rows = rows or []
             self._render_news_list(select_first=True)
         except Exception as e:
             self.article_status.value = f"Search failed: {e}"
+            self.page.update()
         finally:
             self.search_button.disabled = False
             self.search_button.icon = ft.Icons.SEARCH
-            await self.page.update_async()
+            self.page.update()
 
     def _render_news_list(self, select_first: bool = False):
         palette = self._palette()
         self.news_list.controls.clear()
+
         for row in self.news_rows:
             title, source, region, published, link = row
+
+            async def _click(e, r=row):
+                await self._handle_select(r)
+
             tile = ft.Container(
                 data=link,
                 bgcolor=palette["panel"],
                 border_radius=10,
                 padding=12,
                 ink=True,
-                on_click=lambda _, r=row: self.page.run_task(self._handle_select(r)),
+                on_click=_click,  # ✅ 直接 async handler
                 content=ft.Column(
                     spacing=4,
                     controls=[
@@ -284,16 +306,19 @@ class NewsDeskApp:
         self._update_list_highlight()
 
         if select_first and self.news_rows:
-            self.page.run_task(self._handle_select(self.news_rows[0]))
+            # ✅ 这里也别用 run_task；直接 schedule
+            async def _select_first():
+                await self._handle_select(self.news_rows[0])
+
+            asyncio.create_task(_select_first())
+
         self.news_list.update()
 
     def _update_list_highlight(self):
         palette = self._palette()
         for tile in self.news_list.controls:
             link = tile.data
-            tile.bgcolor = (
-                palette["panel_alt"] if link == self.selected_link else palette["panel"]
-            )
+            tile.bgcolor = palette["panel_alt"] if link == self.selected_link else palette["panel"]
             if isinstance(tile.content, ft.Column):
                 for idx, child in enumerate(tile.content.controls):
                     if isinstance(child, ft.Text):
@@ -303,26 +328,30 @@ class NewsDeskApp:
     async def _handle_select(self, row: Iterable):
         title, source, region, published, link = row
         self.selected_link = link
+        self._update_list_highlight()
+
         article = await _run_in_executor(lambda: get_article_by_link(link))
         if not article:
             self.article_title.value = title
+            self.article_meta.value = f"{source} · {region} · {published}"
             self.article_body.value = t("loading_article")
             self.article_status.value = t("loading_article")
-            await self.page.update_async()
+            self.page.update()
             return
 
         self.current_article = article
         self.article_meta.value = f"{source} · {region} · {published}"
         self.article_title.value = article.get("title") or title
         self._render_article()
+        self.page.update()
 
+        # ✅ 没英文正文则抓取
         if not article.get("content_en") and link not in self._fetching_links:
             self._fetching_links.add(link)
-            self.page.run_task(self._fetch_content(article))
+            asyncio.create_task(self._fetch_content(article))
 
+        # ✅ 需要时翻译
         self._ensure_translation(article)
-        self._update_list_highlight()
-        await self.page.update_async()
 
     def _render_article(self):
         if not self.current_article:
@@ -331,7 +360,6 @@ class NewsDeskApp:
             self.article_status.value = ""
             return
 
-        palette = self._palette()
         article = self.current_article
         content_en = (article.get("content_en") or "").strip()
         content_zh = (article.get("content_zh") or "").strip()
@@ -345,30 +373,27 @@ class NewsDeskApp:
         elif mode == "zh_only":
             sections.append(content_zh or t("no_translation_yet"))
         elif mode == "zh_en":
-            if content_zh:
-                sections.append(content_zh)
-            else:
-                sections.append(t("no_translation_yet"))
+            sections.append(content_zh or t("no_translation_yet"))
             sections.append(content_en or t("loading_article"))
-        else:  # English only or fallback
+        else:
             sections.append(content_en or t("loading_article"))
 
         self.article_body.value = "\n\n".join(sections)
         self.article_body.code_theme = (
             "atom-one-dark" if AppSettings.theme == "dark" else "atom-one-light"
         )
+
         self.article_status.value = (
             t("translation")
             + ": "
             + {
+                "en_only": t("mode_en_only"),
                 "en_zh": t("mode_en_zh"),
                 "zh_only": t("mode_zh_only"),
                 "zh_en": t("mode_zh_en"),
             }.get(mode, t("mode_en_only"))
         )
 
-        self.article_title.color = palette["fg"]
-        self.article_meta.color = palette["muted"]
         self.page.update()
 
     async def _fetch_content(self, article: dict[str, Any]):
@@ -385,7 +410,7 @@ class NewsDeskApp:
             self._ensure_translation(article)
         finally:
             self._fetching_links.discard(link)
-            await self.page.update_async()
+            self.page.update()
 
     def _ensure_translation(self, article: dict[str, Any]):
         mode = AppSettings.translate_mode
@@ -402,7 +427,7 @@ class NewsDeskApp:
             return
 
         self._translating_link = link
-        self.page.run_task(self._translate_article(article))
+        asyncio.create_task(self._translate_article(article))
 
     async def _translate_article(self, article: dict[str, Any]):
         link = article.get("link")
@@ -420,18 +445,19 @@ class NewsDeskApp:
                 article["content_zh"] = content_to_save
                 self._render_article()
         except TranslationError as e:
-            article["content_zh"] = str(e)
-            await _run_in_executor(lambda: save_article_zh(link, str(e)))
+            msg = str(e)
+            article["content_zh"] = msg
+            await _run_in_executor(lambda: save_article_zh(link, msg))
             self._render_article()
         except Exception as e:
             article["content_zh"] = f"[Translation failed] {e}"
             self._render_article()
         finally:
             self._translating_link = None
-            await self.page.update_async()
+            self.page.update()
 
     # ------------------------------------------------------------------ Settings
-    def _open_settings(self, _):
+    def _open_settings(self, e):
         palette = self._palette()
         translate_modes = [
             ("en_only", t("mode_en_only")),
@@ -456,25 +482,21 @@ class NewsDeskApp:
         )
         mode_selector = ft.RadioGroup(
             value=AppSettings.translate_mode if AppSettings.translate_mode in {"en_zh", "zh_only", "zh_en"} else "en_only",
-            content=ft.Column(
-                controls=[
-                    ft.Radio(value=key, label=label) for key, label in translate_modes
-                ]
-            ),
+            content=ft.Column(controls=[ft.Radio(value=k, label=lb) for k, lb in translate_modes]),
             on_change=self._change_translate_mode,
         )
         auto_translate_switch = ft.Switch(
             label=t("auto_translate"),
-            value=AppSettings.auto_translate,
+            value=getattr(AppSettings, "auto_translate", True),
             on_change=self._toggle_auto_translate,
         )
 
-        def update_days(e: ft.ControlEvent):
+        def update_days(e2: ft.ControlEvent):
             try:
-                AppSettings.default_days = int(e.control.value or AppSettings.default_days)
+                AppSettings.default_days = int(e2.control.value or AppSettings.default_days)
             except ValueError:
-                e.control.value = str(AppSettings.default_days)
-                e.control.update()
+                e2.control.value = str(AppSettings.default_days)
+                e2.control.update()
 
         defaults_fields = ft.Column(
             spacing=10,
@@ -482,7 +504,7 @@ class NewsDeskApp:
                 ft.TextField(
                     label=t("keyword"),
                     value=AppSettings.default_keyword,
-                    on_change=lambda e: setattr(AppSettings, "default_keyword", e.control.value),
+                    on_change=lambda ev: setattr(AppSettings, "default_keyword", ev.control.value),
                 ),
                 ft.TextField(
                     label=t("days"),
@@ -499,22 +521,28 @@ class NewsDeskApp:
                         ft.dropdown.Option("Fox"),
                     ],
                     value=AppSettings.default_source,
-                    on_change=lambda e: setattr(AppSettings, "default_source", e.control.value),
+                    on_change=lambda ev: setattr(AppSettings, "default_source", ev.control.value),
                 ),
             ],
         )
+
+        async def _fetch_latest_click(ev):
+            await self._fetch_latest()
+
+        async def _clear_all_click(ev):
+            await self._clear_all_data()
 
         action_buttons = ft.Row(
             controls=[
                 ft.FilledButton(
                     text=t("fetch_latest"),
                     icon=ft.Icons.UPDATE,
-                    on_click=lambda _: self.page.run_task(self._fetch_latest()),
+                    on_click=_fetch_latest_click,   # ✅ async
                 ),
                 ft.OutlinedButton(
                     text=t("clear_all_data"),
                     icon=ft.Icons.DELETE_SWEEP,
-                    on_click=lambda _: self.page.run_task(self._clear_all_data()),
+                    on_click=_clear_all_click,      # ✅ async
                 ),
             ],
             spacing=12,
@@ -562,7 +590,6 @@ class NewsDeskApp:
         save_settings()
         if self._settings_dialog:
             self._settings_dialog.open = False
-            self.page.update()
         self._apply_theme()
         self._rebuild_shell()
 
@@ -584,13 +611,15 @@ class NewsDeskApp:
             AppSettings.translate_mode = "en_only"
             save_settings()
         self._render_article()
-        self._ensure_translation(self.current_article or {})
+        if self.current_article:
+            self._ensure_translation(self.current_article)
         self.page.update()
 
     def _toggle_auto_translate(self, e: ft.ControlEvent):
         AppSettings.auto_translate = bool(e.control.value)
         save_settings()
-        self._ensure_translation(self.current_article or {})
+        if self.current_article:
+            self._ensure_translation(self.current_article)
 
     def _refresh_labels(self):
         self.search_field.hint_text = t("keyword")
@@ -612,7 +641,6 @@ class NewsDeskApp:
 
     def _run_fetch_latest(self):
         from news_fetch_and_store import fetch_and_store, init_db
-
         init_db()
         fetch_and_store()
 
@@ -625,9 +653,10 @@ class NewsDeskApp:
         self._translating_link = None
         self.news_list.controls.clear()
         self.article_title.value = t("title")
+        self.article_meta.value = ""
         self.article_body.value = ""
         self.article_status.value = ""
-        await self.page.update_async()
+        self.page.update()
 
     def _rebuild_shell(self):
         self.layout.controls[0] = self._build_top_bar()
@@ -638,10 +667,12 @@ class NewsDeskApp:
         self._render_article()
         self.page.update()
 
+# ================== APP ENTRY ==================
 
 def main(page: ft.Page):
     NewsDeskApp(page)
 
 
 if __name__ == "__main__":
-    ft.app(target=main)
+    ft.run(main)
+
