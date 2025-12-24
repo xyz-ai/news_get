@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import asyncio
-from typing import Any, Callable, Iterable
+from typing import Any, Iterable
 
 import flet as ft
 
@@ -28,615 +27,482 @@ from gui.theme import get_theme
 load_settings()
 
 
-def _run_in_executor(func: Callable[[], Any]) -> asyncio.Future:
-    loop = asyncio.get_event_loop()
-    return loop.run_in_executor(None, func)
-
-
 class NewsDeskApp:
     def __init__(self, page: ft.Page):
         self.page = page
+        self.news_rows: list[tuple] = []
+        self.current_article: dict[str, Any] | None = None
+        self.selected_link: str | None = None
+        self.settings_dialog: ft.AlertDialog | None = None
+
+        self._configure_page()
+        self._build_ui()
+        self.page.add(self.root)
+        self.page.update()
+        self._perform_initial_search()
+
+    # ------------------------------------------------------------------ Layout
+    def _configure_page(self) -> None:
         self.page.title = "News Desk"
         self.page.padding = 0
         self.page.horizontal_alignment = "stretch"
         self.page.vertical_alignment = "stretch"
-        self.page.scroll = "adaptive"
         self._apply_theme()
 
-        self.news_rows: list[tuple] = []
-        self.current_article: dict[str, Any] | None = None
-        self.selected_link: str | None = None
-        self._fetching_links: set[str] = set()
-        self._translating_link: str | None = None
-        self._settings_dialog: ft.AlertDialog | None = None
-
-        self.search_field = ft.TextField(
-            value=AppSettings.default_keyword,
-            hint_text=t("keyword"),
-            prefix_icon=ft.Icons.SEARCH,
-            border_radius=8,
-            dense=True,
-            filled=True,
-            on_submit=self._on_search_submit,
-            expand=True,
-        )
-        self.search_button = ft.FilledButton(
-            text=t("search"),
-            icon=ft.Icons.SEARCH,
-            on_click=self._on_search_submit,
-            height=44,
-        )
-        self.settings_button = ft.IconButton(
-            icon=ft.Icons.SETTINGS_OUTLINED,
-            tooltip=t("settings"),
-            on_click=self._open_settings,
-        )
-
-        self.news_list = ft.ListView(
-            spacing=8,
-            padding=12,
-            expand=True,
-            auto_scroll=False,
-        )
-
-        self.article_title = ft.Text(
-            value=t("no_article_selected"),
-            weight=ft.FontWeight.W_700,
-            size=20,
-            color=get_theme()["fg"],
-        )
-        self.article_meta = ft.Text(value="", color=get_theme()["muted"])
-        self.article_body = ft.Markdown(
-            value="",
-            selectable=True,
-            on_tap_link=lambda e: self.page.launch_url(e.data),
-            code_theme="atom-one-dark" if AppSettings.theme == "dark" else "atom-one-light",
-            extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
-            expand=True,
-            scroll=ft.ScrollMode.AUTO,
-        )
-        self.article_status = ft.Text(
-            value="",
-            color=get_theme()["muted"],
-            size=12,
-        )
-
-        self.layout = ft.Column(
-            spacing=0,
-            controls=[
-                self._build_top_bar(),
-                self._build_body(),
-            ],
-            expand=True,
-        )
-
-        self.page.add(self.layout)
-        self.page.update()
-        self.page.run_task(self._initial_search())
-
-    # ------------------------------------------------------------------ UI
-    def _palette(self):
-        theme = get_theme()
-        return {
-            "bg": theme["bg"],
-            "panel": theme["panel"],
-            "panel_alt": theme["button"],
-            "fg": theme["fg"],
-            "muted": theme["muted"],
-            "accent": theme["accent"],
-            "border": theme["border"],
-        }
-
-    def _apply_theme(self):
+    def _apply_theme(self) -> None:
+        palette = self._palette()
         self.page.theme_mode = (
             ft.ThemeMode.DARK if AppSettings.theme == "dark" else ft.ThemeMode.LIGHT
         )
-        palette = get_theme()
         self.page.bgcolor = palette["bg"]
         self.page.theme = ft.Theme(
             color_scheme=ft.ColorScheme(
                 primary=palette["accent"],
                 secondary=palette["panel"],
-            ),
-            font_family="Segoe UI",
+            )
         )
 
-    def _build_top_bar(self) -> ft.Container:
-        palette = self._palette()
-        self.search_field.fill_color = palette["bg"]
-        self.search_field.border_color = palette["border"]
-        self.search_field.cursor_color = palette["fg"]
-        self.search_field.color = palette["fg"]
+    def _palette(self) -> dict[str, str]:
+        return get_theme()
 
-        return ft.Container(
-            padding=ft.padding.symmetric(horizontal=16, vertical=12),
-            bgcolor=palette["panel"],
-            content=ft.Row(
-                controls=[
-                    ft.Text(
-                        t("title"),
-                        weight=ft.FontWeight.W_700,
-                        size=18,
-                        color=palette["fg"],
-                    ),
-                    self.search_field,
-                    self.search_button,
-                    self.settings_button,
-                ],
-                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-            ),
+    def _build_ui(self) -> None:
+        palette = self._palette()
+
+        self.search_field = ft.TextField(
+            value=AppSettings.default_keyword,
+            hint_text=t("keyword"),
+            dense=True,
+            expand=True,
+            on_submit=self._on_search,
+        )
+        self.search_button = ft.FilledButton(
+            text=t("search"),
+            icon=ft.Icons.SEARCH,
+            height=40,
+            on_click=self._on_search,
         )
 
-    def _build_body(self) -> ft.Container:
-        palette = self._palette()
-        left_panel = ft.Container(
-            width=340,
+        self.news_list = ft.ListView(
+            spacing=8,
+            padding=8,
+            expand=True,
+            auto_scroll=False,
+        )
+
+        self.query_label = ft.Text(t("query"), size=13, color=palette["muted"])
+        left_column = ft.Column(
+            controls=[
+                self.query_label,
+                ft.Row([self.search_field, self.search_button], spacing=8),
+                self.news_list,
+            ],
+            spacing=10,
+            expand=True,
+        )
+        self.left_panel = ft.Container(
+            width=320,
             bgcolor=palette["panel"],
+            padding=12,
             border=ft.border.only(right=ft.BorderSide(1, palette["border"])),
-            content=ft.Column(
-                controls=[
-                    ft.Text(
-                        t("query"),
-                        size=14,
-                        weight=ft.FontWeight.W_600,
-                        color=palette["muted"],
-                    ),
-                    self.news_list,
-                ],
-                spacing=10,
-                expand=True,
-            ),
+            content=left_column,
         )
 
-        article_area = ft.Container(
-            bgcolor=palette["bg"],
-            padding=ft.padding.only(left=18, right=18, top=12, bottom=18),
+        self.article_title = ft.Text(
+            t("no_article_selected"),
+            size=22,
+            weight=ft.FontWeight.W_700,
+            color=palette["fg"],
+            max_lines=2,
+            overflow=ft.TextOverflow.ELLIPSIS,
+        )
+        self.article_meta = ft.Text("", size=12, color=palette["muted"])
+        self.translation_indicator = ft.Text(
+            self._translate_mode_label(),
+            size=12,
+            color=palette["muted"],
+        )
+        self.article_body = ft.Column(
+            spacing=12,
+            scroll=ft.ScrollMode.AUTO,
             expand=True,
-            content=ft.Column(
-                controls=[
-                    self.article_title,
-                    self.article_meta,
-                    ft.Container(height=8),
-                    ft.Container(
-                        content=self.article_body,
-                        bgcolor=palette["panel"],
-                        border_radius=12,
-                        padding=ft.padding.all(16),
-                        expand=True,
-                    ),
-                    self.article_status,
-                ],
-                spacing=10,
-                expand=True,
-            ),
+        )
+        self.article_status = ft.Text("", size=12, color=palette["muted"])
+
+        article_container = ft.Container(
+            bgcolor=palette["panel"],
+            padding=16,
+            border_radius=12,
+            content=self.article_body,
+            expand=True,
         )
 
-        return ft.Container(
+        article_column = ft.Column(
+            controls=[
+                self.article_title,
+                self.article_meta,
+                self.translation_indicator,
+                article_container,
+                self.article_status,
+            ],
+            spacing=12,
             expand=True,
-            bgcolor=palette["bg"],
-            content=ft.Row(
-                controls=[left_panel, article_area],
-                spacing=0,
-                expand=True,
-            ),
         )
+        self.right_panel = ft.Container(
+            bgcolor=palette["bg"],
+            padding=16,
+            content=article_column,
+            expand=True,
+        )
+
+        self.settings_button = ft.IconButton(
+            icon=ft.Icons.SETTINGS_OUTLINED,
+            tooltip=t("settings"),
+            on_click=self._open_settings,
+        )
+        self.title_text = ft.Text(
+            "News Desk", size=18, weight=ft.FontWeight.W_700, color=palette["fg"]
+        )
+        top_row = ft.Row(
+            controls=[
+                self.title_text,
+                ft.Container(expand=True),
+                self.settings_button,
+            ],
+            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
+        self.top_bar = ft.Container(
+            bgcolor=palette["panel"],
+            padding=ft.padding.symmetric(horizontal=16, vertical=12),
+            border=ft.border.only(bottom=ft.BorderSide(1, palette["border"])),
+            content=top_row,
+        )
+
+        body_row = ft.Row(
+            controls=[self.left_panel, self.right_panel],
+            spacing=0,
+            expand=True,
+        )
+        self.root = ft.Column(
+            controls=[self.top_bar, body_row],
+            spacing=0,
+            expand=True,
+        )
+
+        self._refresh_colors()
+        self._render_article_content()
 
     # ------------------------------------------------------------------ Actions
-    async def _initial_search(self):
-        await self._search(keyword=AppSettings.default_keyword)
+    def _perform_initial_search(self) -> None:
+        initial_keyword = AppSettings.default_keyword or ""
+        self.search_news(initial_keyword)
 
-    def _on_search_submit(self, _):
-        self.page.run_task(self._search(self.search_field.value.strip()))
+    def _on_search(self, _) -> None:
+        keyword = (self.search_field.value or "").strip()
+        self.search_news(keyword)
 
-    async def _search(self, keyword: str | None):
-        self.search_button.disabled = True
-        self.search_button.icon = ft.Icons.HOURGLASS_BOTTOM
-        self.search_button.update()
-        await self.page.update_async()
-
-        cleaned_kw = keyword or ""
+    def search_news(self, keyword: str) -> None:
         self.article_status.value = ""
+        self.page.update()
         try:
-            rows = await _run_in_executor(lambda: query_news(keyword=cleaned_kw or None))
+            rows = query_news(keyword=keyword or None)
             self.news_rows = rows or []
-            self._render_news_list(select_first=True)
-        except Exception as e:
-            self.article_status.value = f"Search failed: {e}"
-        finally:
-            self.search_button.disabled = False
-            self.search_button.icon = ft.Icons.SEARCH
-            await self.page.update_async()
+        except Exception as exc:  # pragma: no cover - runtime guardrail
+            self.news_rows = []
+            self._populate_news_list()
+            self._clear_article_view(message=f"Search failed: {exc}")
+            self.page.update()
+            return
 
-    def _render_news_list(self, select_first: bool = False):
+        self._populate_news_list()
+        if self.news_rows:
+            self.select_article(self.news_rows[0])
+        else:
+            self._clear_article_view(message=t("no_article_selected"))
+        self.page.update()
+
+    def _populate_news_list(self) -> None:
         palette = self._palette()
         self.news_list.controls.clear()
         for row in self.news_rows:
             title, source, region, published, link = row
             tile = ft.Container(
                 data=link,
-                bgcolor=palette["panel"],
-                border_radius=10,
-                padding=12,
+                bgcolor=self._tile_bgcolor(link),
+                padding=10,
+                border_radius=8,
                 ink=True,
-                on_click=lambda _, r=row: self.page.run_task(self._handle_select(r)),
+                on_click=lambda _, r=row: self.select_article(r),
                 content=ft.Column(
                     spacing=4,
                     controls=[
                         ft.Text(
                             title,
                             weight=ft.FontWeight.W_600,
-                            color=palette["fg"],
                             size=14,
                             max_lines=2,
                             overflow=ft.TextOverflow.ELLIPSIS,
+                            color=palette["fg"],
                         ),
                         ft.Text(
                             f"{source} · {region} · {published}",
+                            size=11,
                             color=palette["muted"],
-                            size=12,
                         ),
                     ],
                 ),
             )
             self.news_list.controls.append(tile)
-
-        self._update_list_highlight()
-
-        if select_first and self.news_rows:
-            self.page.run_task(self._handle_select(self.news_rows[0]))
         self.news_list.update()
+        self._update_selection_highlight()
 
-    def _update_list_highlight(self):
+    def select_article(self, row: Iterable) -> None:
+        title, source, region, published, link = row
+        self.selected_link = link
+        self._update_selection_highlight()
+
+        article = get_article_by_link(link)
+        if not article:
+            article = {"title": title, "link": link, "content_en": None, "content_zh": None}
+        self.current_article = article
+
+        self.article_title.value = article.get("title") or title
+        self.article_meta.value = f"{source} · {region} · {published}"
+        self.translation_indicator.value = self._translate_mode_label()
+
+        if not article.get("content_en"):
+            self.article_status.value = t("loading_article")
+            self._render_article_content(placeholder=t("loading_article"))
+            self.page.update()
+            content = fetch_article_content(link)
+            save_article_en(link, content)
+            article["content_en"] = content
+            self.article_status.value = ""
+
+        self._ensure_translation(article)
+        self._render_article_content()
+        self.page.update()
+
+    def _clear_article_view(self, message: str) -> None:
+        palette = self._palette()
+        self.current_article = None
+        self.article_title.value = t("no_article_selected")
+        self.article_meta.value = ""
+        self.translation_indicator.value = self._translate_mode_label()
+        self.article_body.controls.clear()
+        self.article_body.controls.append(
+            ft.Text(message, color=palette["muted"])
+        )
+        self.article_status.value = message
+
+    def _render_article_content(self, placeholder: str | None = None) -> None:
+        palette = self._palette()
+        self.article_body.controls.clear()
+
+        if placeholder:
+            self.article_body.controls.append(ft.Text(placeholder, color=palette["muted"]))
+            return
+
+        if not self.current_article:
+            self.article_body.controls.append(
+                ft.Text(t("no_article_selected"), color=palette["muted"])
+            )
+            return
+
+        article = self.current_article
+        content_en = (article.get("content_en") or "").strip()
+        content_zh = (article.get("content_zh") or "").strip()
+
+        sections: list[tuple[str, str]] = []
+        mode = AppSettings.translate_mode
+
+        if mode == "zh_only":
+            sections.append(("中文", content_zh or t("no_translation_yet")))
+        elif mode == "zh_en":
+            sections.append(("中文", content_zh or t("no_translation_yet")))
+            sections.append(("English", content_en or t("loading_article")))
+        elif mode == "en_zh":
+            sections.append(("English", content_en or t("loading_article")))
+            sections.append(("中文", content_zh or t("no_translation_yet")))
+        else:
+            sections.append(("English", content_en or t("loading_article")))
+
+        for idx, (label, body) in enumerate(sections):
+            self.article_body.controls.append(
+                ft.Text(label, weight=ft.FontWeight.W_600, color=palette["muted"])
+            )
+            self.article_body.controls.append(
+                ft.Text(body, selectable=True, color=palette["fg"], size=15)
+            )
+            if idx < len(sections) - 1:
+                self.article_body.controls.append(
+                    ft.Divider(height=1, color=palette["border"])
+                )
+
+    def _update_selection_highlight(self) -> None:
         palette = self._palette()
         for tile in self.news_list.controls:
-            link = tile.data
-            tile.bgcolor = (
-                palette["panel_alt"] if link == self.selected_link else palette["panel"]
-            )
-            if isinstance(tile.content, ft.Column):
+            link = getattr(tile, "data", None)
+            tile.bgcolor = self._tile_bgcolor(link)
+            if isinstance(tile.content, ft.Column) and tile.content.controls:
                 for idx, child in enumerate(tile.content.controls):
                     if isinstance(child, ft.Text):
                         child.color = palette["fg"] if idx == 0 else palette["muted"]
         self.news_list.update()
 
-    async def _handle_select(self, row: Iterable):
-        title, source, region, published, link = row
-        self.selected_link = link
-        article = await _run_in_executor(lambda: get_article_by_link(link))
-        if not article:
-            self.article_title.value = title
-            self.article_body.value = t("loading_article")
-            self.article_status.value = t("loading_article")
-            await self.page.update_async()
-            return
-
-        self.current_article = article
-        self.article_meta.value = f"{source} · {region} · {published}"
-        self.article_title.value = article.get("title") or title
-        self._render_article()
-
-        if not article.get("content_en") and link not in self._fetching_links:
-            self._fetching_links.add(link)
-            self.page.run_task(self._fetch_content(article))
-
-        self._ensure_translation(article)
-        self._update_list_highlight()
-        await self.page.update_async()
-
-    def _render_article(self):
-        if not self.current_article:
-            self.article_title.value = t("no_article_selected")
-            self.article_body.value = ""
-            self.article_status.value = ""
-            return
-
+    def _tile_bgcolor(self, link: str | None) -> str:
         palette = self._palette()
-        article = self.current_article
-        content_en = (article.get("content_en") or "").strip()
-        content_zh = (article.get("content_zh") or "").strip()
-        mode = AppSettings.translate_mode
-
-        sections: list[str] = []
-        if mode == "en_zh":
-            sections.append(content_en or t("loading_article"))
-            if content_zh:
-                sections.append(content_zh)
-        elif mode == "zh_only":
-            sections.append(content_zh or t("no_translation_yet"))
-        elif mode == "zh_en":
-            if content_zh:
-                sections.append(content_zh)
-            else:
-                sections.append(t("no_translation_yet"))
-            sections.append(content_en or t("loading_article"))
-        else:  # English only or fallback
-            sections.append(content_en or t("loading_article"))
-
-        self.article_body.value = "\n\n".join(sections)
-        self.article_body.code_theme = (
-            "atom-one-dark" if AppSettings.theme == "dark" else "atom-one-light"
-        )
-        self.article_status.value = (
-            t("translation")
-            + ": "
-            + {
-                "en_zh": t("mode_en_zh"),
-                "zh_only": t("mode_zh_only"),
-                "zh_en": t("mode_zh_en"),
-            }.get(mode, t("mode_en_only"))
-        )
-
-        self.article_title.color = palette["fg"]
-        self.article_meta.color = palette["muted"]
-        self.page.update()
-
-    async def _fetch_content(self, article: dict[str, Any]):
-        link = article.get("link")
-        if not link:
-            return
-        try:
-            content_en = await _run_in_executor(lambda: fetch_article_content(link))
-            if not content_en:
-                content_en = "[Failed to fetch article content]"
-            await _run_in_executor(lambda: save_article_en(link, content_en))
-            article["content_en"] = content_en
-            self._render_article()
-            self._ensure_translation(article)
-        finally:
-            self._fetching_links.discard(link)
-            await self.page.update_async()
-
-    def _ensure_translation(self, article: dict[str, Any]):
-        mode = AppSettings.translate_mode
-        needs_chinese = mode in {"en_zh", "zh_only", "zh_en"}
-        if not needs_chinese or not AppSettings.auto_translate:
-            return
-        if article.get("content_zh"):
-            return
-        if not article.get("content_en"):
-            return
-
-        link = article.get("link")
-        if not link or self._translating_link == link:
-            return
-
-        self._translating_link = link
-        self.page.run_task(self._translate_article(article))
-
-    async def _translate_article(self, article: dict[str, Any]):
-        link = article.get("link")
-        try:
-            zh_result = await _run_in_executor(
-                lambda: translate_en_zh(article.get("content_en", ""), link=link)
-            )
-            content_to_save = zh_result.text
-            if zh_result.note:
-                content_to_save = f"[Partial translation] {zh_result.note}\n\n{zh_result.text}"
-
-            if content_to_save and content_to_save.strip():
-                if zh_result.translation_status == "success":
-                    await _run_in_executor(lambda: save_article_zh(link, content_to_save))
-                article["content_zh"] = content_to_save
-                self._render_article()
-        except TranslationError as e:
-            article["content_zh"] = str(e)
-            await _run_in_executor(lambda: save_article_zh(link, str(e)))
-            self._render_article()
-        except Exception as e:
-            article["content_zh"] = f"[Translation failed] {e}"
-            self._render_article()
-        finally:
-            self._translating_link = None
-            await self.page.update_async()
+        if self.selected_link and link == self.selected_link:
+            return palette["button"]
+        return palette["panel"]
 
     # ------------------------------------------------------------------ Settings
-    def _open_settings(self, _):
+    def _open_settings(self, _) -> None:
         palette = self._palette()
-        translate_modes = [
-            ("en_only", t("mode_en_only")),
-            ("en_zh", t("mode_en_zh")),
-            ("zh_only", t("mode_zh_only")),
-            ("zh_en", t("mode_zh_en")),
-        ]
+        if self.settings_dialog:
+            self.page.dialog = self.settings_dialog
+            self.settings_dialog.open = True
+            self.page.update()
+            return
 
         theme_switch = ft.Switch(
             label=t("toggle_theme"),
             value=AppSettings.theme == "dark",
-            on_change=self._toggle_theme,
+            on_change=self._handle_theme_toggle,
         )
-        language_dropdown = ft.Dropdown(
-            label=t("language"),
-            options=[
-                ft.dropdown.Option("en", "English"),
-                ft.dropdown.Option("zh", "中文"),
-            ],
-            value=AppSettings.language,
-            on_change=self._change_language,
-        )
-        mode_selector = ft.RadioGroup(
+        translate_modes = ft.RadioGroup(
             value=AppSettings.translate_mode if AppSettings.translate_mode in {"en_zh", "zh_only", "zh_en"} else "en_only",
+            on_change=self._handle_translate_mode_change,
             content=ft.Column(
+                spacing=6,
                 controls=[
-                    ft.Radio(value=key, label=label) for key, label in translate_modes
-                ]
+                    ft.Radio(value="en_zh", label=t("mode_en_zh")),
+                    ft.Radio(value="zh_only", label=t("mode_zh_only")),
+                    ft.Radio(value="zh_en", label=t("mode_zh_en")),
+                    ft.Radio(value="en_only", label=t("mode_en_only")),
+                ],
             ),
-            on_change=self._change_translate_mode,
         )
-        auto_translate_switch = ft.Switch(
-            label=t("auto_translate"),
-            value=AppSettings.auto_translate,
-            on_change=self._toggle_auto_translate,
-        )
-
-        def update_days(e: ft.ControlEvent):
-            try:
-                AppSettings.default_days = int(e.control.value or AppSettings.default_days)
-            except ValueError:
-                e.control.value = str(AppSettings.default_days)
-                e.control.update()
-
-        defaults_fields = ft.Column(
-            spacing=10,
-            controls=[
-                ft.TextField(
-                    label=t("keyword"),
-                    value=AppSettings.default_keyword,
-                    on_change=lambda e: setattr(AppSettings, "default_keyword", e.control.value),
-                ),
-                ft.TextField(
-                    label=t("days"),
-                    value=str(AppSettings.default_days),
-                    keyboard_type=ft.KeyboardType.NUMBER,
-                    on_change=update_days,
-                ),
-                ft.Dropdown(
-                    label=t("source"),
-                    options=[
-                        ft.dropdown.Option("ALL"),
-                        ft.dropdown.Option("BBC"),
-                        ft.dropdown.Option("Guardian"),
-                        ft.dropdown.Option("Fox"),
-                    ],
-                    value=AppSettings.default_source,
-                    on_change=lambda e: setattr(AppSettings, "default_source", e.control.value),
-                ),
-            ],
+        clear_button = ft.OutlinedButton(
+            text=t("clear_all_data"),
+            icon=ft.Icons.DELETE_SWEEP,
+            on_click=self._handle_clear_database,
         )
 
-        action_buttons = ft.Row(
-            controls=[
-                ft.FilledButton(
-                    text=t("fetch_latest"),
-                    icon=ft.Icons.UPDATE,
-                    on_click=lambda _: self.page.run_task(self._fetch_latest()),
-                ),
-                ft.OutlinedButton(
-                    text=t("clear_all_data"),
-                    icon=ft.Icons.DELETE_SWEEP,
-                    on_click=lambda _: self.page.run_task(self._clear_all_data()),
-                ),
-            ],
-            spacing=12,
-        )
-
-        content = ft.Column(
-            spacing=18,
+        dialog_content = ft.Column(
+            spacing=14,
+            width=440,
             controls=[
                 ft.Text(t("settings_title"), size=18, weight=ft.FontWeight.W_700),
                 ft.Text(t("appearance"), weight=ft.FontWeight.W_600, color=palette["muted"]),
                 theme_switch,
-                language_dropdown,
                 ft.Text(t("translation"), weight=ft.FontWeight.W_600, color=palette["muted"]),
-                mode_selector,
-                auto_translate_switch,
-                ft.Text(t("auto_translate_note"), size=12, color=palette["muted"]),
-                ft.Text(t("default_params"), weight=ft.FontWeight.W_600, color=palette["muted"]),
-                defaults_fields,
-                action_buttons,
-                ft.Row(
-                    alignment=ft.MainAxisAlignment.END,
-                    controls=[
-                        ft.TextButton(
-                            text=t("save"),
-                            icon=ft.Icons.SAVE_OUTLINED,
-                            on_click=lambda _: self._save_settings(),
-                        )
-                    ],
-                ),
+                translate_modes,
+                clear_button,
             ],
-            width=520,
-            scroll=ft.ScrollMode.AUTO,
         )
 
-        self._settings_dialog = ft.AlertDialog(
+        self.settings_dialog = ft.AlertDialog(
             modal=True,
-            content=content,
+            content=dialog_content,
+            actions=[
+                ft.TextButton(text=t("save"), icon=ft.Icons.CHECK, on_click=self._close_settings)
+            ],
             actions_alignment=ft.MainAxisAlignment.END,
         )
-        self.page.dialog = self._settings_dialog
-        self._settings_dialog.open = True
+        self.page.dialog = self.settings_dialog
+        self.settings_dialog.open = True
         self.page.update()
 
-    def _save_settings(self):
-        save_settings()
-        if self._settings_dialog:
-            self._settings_dialog.open = False
+    def _close_settings(self, _) -> None:
+        if self.settings_dialog:
+            self.settings_dialog.open = False
             self.page.update()
-        self._apply_theme()
-        self._rebuild_shell()
 
-    def _toggle_theme(self, e: ft.ControlEvent):
+    def _handle_theme_toggle(self, _) -> None:
         toggle_theme()
         self._apply_theme()
-        self._rebuild_shell()
+        self._refresh_colors()
+        self._render_article_content()
+        self._populate_news_list()
+        self.page.update()
 
-    def _change_language(self, e: ft.ControlEvent):
-        AppSettings.language = e.control.value
-        save_settings()
-        self._refresh_labels()
-
-    def _change_translate_mode(self, e: ft.ControlEvent):
+    def _handle_translate_mode_change(self, e: ft.ControlEvent) -> None:
         value = e.control.value
         if value in {"en_zh", "zh_only", "zh_en"}:
             set_translate_mode(value)
         else:
             AppSettings.translate_mode = "en_only"
             save_settings()
-        self._render_article()
-        self._ensure_translation(self.current_article or {})
+        self.translation_indicator.value = self._translate_mode_label()
+        if self.current_article:
+            self._ensure_translation(self.current_article)
+        self._render_article_content()
         self.page.update()
 
-    def _toggle_auto_translate(self, e: ft.ControlEvent):
-        AppSettings.auto_translate = bool(e.control.value)
-        save_settings()
-        self._ensure_translation(self.current_article or {})
+    def _handle_clear_database(self, _) -> None:
+        clear_all_news()
+        self.news_rows.clear()
+        self.news_list.controls.clear()
+        self.selected_link = None
+        self._clear_article_view(message=t("clear_all_data"))
+        self.page.update()
 
-    def _refresh_labels(self):
-        self.search_field.hint_text = t("keyword")
-        self.search_button.text = t("search")
-        self.article_status.value = ""
-        self._rebuild_shell()
+    def _ensure_translation(self, article: dict[str, Any]) -> None:
+        mode = AppSettings.translate_mode
+        needs_chinese = mode in {"en_zh", "zh_only", "zh_en"}
+        if not needs_chinese:
+            return
+        if article.get("content_zh"):
+            return
+        if not article.get("content_en"):
+            return
 
-    # ------------------------------------------------------------------ Data actions
-    async def _fetch_latest(self):
-        progress = ft.SnackBar(ft.Text(t("fetch_latest") + "..."), open=True)
-        self.page.snack_bar = progress
+        self.article_status.value = t("translation") + "..."
         self.page.update()
         try:
-            await _run_in_executor(self._run_fetch_latest)
-            await self._search(self.search_field.value.strip())
-        finally:
-            progress.open = False
-            self.page.update()
+            result = translate_en_zh(article.get("content_en", ""), link=article.get("link"))
+            content = result.text
+            if result.note:
+                content = f"[{result.note}]\n\n{content}"
+            save_article_zh(article.get("link", ""), content)
+            article["content_zh"] = content
+            self.article_status.value = ""
+        except TranslationError as exc:
+            article["content_zh"] = str(exc)
+            self.article_status.value = str(exc)
+        except Exception as exc:  # pragma: no cover - runtime guardrail
+            article["content_zh"] = f"[Translation failed] {exc}"
+            self.article_status.value = article["content_zh"]
 
-    def _run_fetch_latest(self):
-        from news_fetch_and_store import fetch_and_store, init_db
+    def _refresh_colors(self) -> None:
+        palette = self._palette()
+        self.page.bgcolor = palette["bg"]
+        self.top_bar.bgcolor = palette["panel"]
+        self.top_bar.border = ft.border.only(bottom=ft.BorderSide(1, palette["border"]))
+        self.left_panel.bgcolor = palette["panel"]
+        self.left_panel.border = ft.border.only(right=ft.BorderSide(1, palette["border"]))
+        self.right_panel.bgcolor = palette["bg"]
 
-        init_db()
-        fetch_and_store()
+        self.title_text.color = palette["fg"]
+        self.query_label.color = palette["muted"]
+        self.search_field.fill_color = palette["bg"]
+        self.search_field.border_color = palette["border"]
+        self.search_field.color = palette["fg"]
+        self.article_title.color = palette["fg"]
+        self.article_meta.color = palette["muted"]
+        self.translation_indicator.color = palette["muted"]
+        self.article_status.color = palette["muted"]
+        self.settings_button.icon_color = palette["fg"]
 
-    async def _clear_all_data(self):
-        await _run_in_executor(clear_all_news)
-        self.news_rows.clear()
-        self.current_article = None
-        self.selected_link = None
-        self._fetching_links.clear()
-        self._translating_link = None
-        self.news_list.controls.clear()
-        self.article_title.value = t("title")
-        self.article_body.value = ""
-        self.article_status.value = ""
-        await self.page.update_async()
-
-    def _rebuild_shell(self):
-        self.layout.controls[0] = self._build_top_bar()
-        self.layout.controls[1] = self._build_body()
-        self.page.controls.clear()
-        self.page.add(self.layout)
-        self._update_list_highlight()
-        self._render_article()
-        self.page.update()
+    # ------------------------------------------------------------------ Helpers
+    def _translate_mode_label(self) -> str:
+        label_map = {
+            "en_zh": t("mode_en_zh"),
+            "zh_only": t("mode_zh_only"),
+            "zh_en": t("mode_zh_en"),
+        }
+        return f"{t('translation')}: {label_map.get(AppSettings.translate_mode, t('mode_en_only'))}"
 
 
 def main(page: ft.Page):
