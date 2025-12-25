@@ -1,12 +1,5 @@
-# Core UI
 flet==0.28.3
-
-# Network
 requests==2.31.0
-
-# Parsing
 lxml>=5.3.0
 beautifulsoup4==4.12.3
-
-# Compatibility
 typing-extensions==4.9.0
