@@ -1,0 +1,52 @@
+name: Build Android APK (Flet 0.28.3)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "main" ]
+  # 如果你希望 push 到某个分支才触发，改上面 branches
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip show flet
+
+      # 可选：把 Flet/Flutter/Android SDK 的缓存启用，第二次起会快很多
+      - name: Cache Flet/Flutter/Android SDK
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/flet
+            ~/Android
+            ~/java
+            ~/flutter
+          key: ${{ runner.os }}-flet0283-${{ hashFiles('requirements.txt') }}
+
+      - name: Build APK
+        env:
+          # 让输出更“纯文本”，方便看日志（可选）
+          FLET_CLI_NO_RICH_OUTPUT: "1"
+        run: |
+          flet --version
+          flet build apk
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk
+          path: build/apk/*.apk
