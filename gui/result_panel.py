@@ -1,6 +1,15 @@
 import tkinter as tk
+from threading import Thread
+
 from gui.theme import get_theme
-from core.translator import translate
+from core.settings import AppSettings
+from core.translator import TranslationError, translate_en_zh
+from core.article_repo import (
+    get_article_by_link,
+    save_article_en,
+    save_article_zh,
+)
+from core.article_fetcher import fetch_article_content
 
 
 class ResultPanel(tk.Frame):
@@ -8,76 +17,110 @@ class ResultPanel(tk.Frame):
         theme = get_theme()
         super().__init__(master, bg=theme["bg"])
 
-        # 左：列表区域（带滚动条）
-        left = tk.Frame(self, bg=theme["panel"], width=360)
-        left.pack(side="left", fill="y")
-        left.pack_propagate(False)
+        self.data = []                 # [(title, source, region, published, link)]
+        self.current_article = None    # dict from DB
+        self._translating_link = None
+        self._fetching_links = set()
 
-        tk.Label(left, text="News List", bg=theme["panel"], fg=theme["fg"],
-                 font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=10, pady=(10, 6))
-
-        list_wrap = tk.Frame(left, bg=theme["panel"])
-        list_wrap.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        # ───────── 左侧：新闻列表 ─────────
+        self.left = tk.Frame(self, bg=theme["panel"], width=360)
+        self.left.pack(side="left", fill="y")
+        self.left.pack_propagate(False)
 
         self.listbox = tk.Listbox(
-            list_wrap,
+            self.left,
             bg=theme["panel"],
             fg=theme["fg"],
             selectbackground=theme["accent"],
-            highlightthickness=1,
-            highlightbackground=theme["border"],
+            highlightthickness=0,
             relief="flat",
-            activestyle="none",
         )
-        self.listbox.pack(side="left", fill="both", expand=True)
+        self.listbox.pack(fill="both", expand=True, padx=8, pady=8)
+        self.listbox.bind("<<ListboxSelect>>", self.show_detail)
 
-        sb = tk.Scrollbar(list_wrap, command=self.listbox.yview)
-        sb.pack(side="right", fill="y")
-        self.listbox.config(yscrollcommand=sb.set)
-
-        # 右：详情区域（带滚动条）
-        right = tk.Frame(self, bg=theme["bg"])
-        right.pack(side="right", fill="both", expand=True)
-
-        tk.Label(right, text="Detail", bg=theme["bg"], fg=theme["fg"],
-                 font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=14, pady=(10, 6))
-
-        text_wrap = tk.Frame(right, bg=theme["bg"])
-        text_wrap.pack(fill="both", expand=True, padx=14, pady=(0, 14))
+        # ───────── 右侧：正文区域 ─────────
+        self.right = tk.Frame(self, bg=theme["bg"])
+        self.right.pack(side="right", fill="both", expand=True)
 
         self.text = tk.Text(
-            text_wrap,
+            self.right,
             bg=theme["bg"],
             fg=theme["fg"],
             wrap="word",
             relief="flat",
-            highlightthickness=1,
-            highlightbackground=theme["border"],
+            padx=14,
+            pady=14,
         )
-        self.text.pack(side="left", fill="both", expand=True)
+        self.text.pack(fill="both", expand=True, padx=12, pady=12)
 
-        tsb = tk.Scrollbar(text_wrap, command=self.text.yview)
-        tsb.pack(side="right", fill="y")
-        self.text.config(yscrollcommand=tsb.set)
+        self.text.tag_config("title", font=("Segoe UI", 14, "bold"))
+        self.apply_theme()
 
-        # 数据 + 事件
+    # =================================================
+    # 主题 / 字体
+    # =================================================
+    def apply_theme(self):
+        theme = get_theme()
+        fs = AppSettings.font_size
+
+        self.config(bg=theme["bg"])
+        self.left.config(bg=theme["panel"])
+        self.right.config(bg=theme["bg"])
+
+        self.listbox.config(
+            bg=theme["panel"],
+            fg=theme["fg"],
+            selectbackground=theme["accent"],
+            font=("Segoe UI", fs),
+        )
+
+        self.text.config(
+            bg=theme["bg"],
+            fg=theme["fg"],
+            insertbackground=theme["fg"],
+            font=("Segoe UI", fs + 1),
+            spacing1=4,
+            spacing2=2,
+            spacing3=8,
+        )
+        self.text.tag_config("title", font=("Segoe UI", fs + 2, "bold"))
+
+        # 主题刷新后保留当前文章的渲染
+        self.render_current_article()
+
+    # =================================================
+    # 公共刷新入口
+    # =================================================
+    def refresh_current(self):
+        self.render_current_article()
+        self.ensure_translation_for_current_article()
+
+    def clear(self):
         self.data = []
-        self.listbox.bind("<<ListboxSelect>>", self.show_detail)
+        self.current_article = None
+        self._fetching_links.clear()
+        self._translating_link = None
+        self.listbox.delete(0, tk.END)
+        self.text.delete("1.0", tk.END)
 
+    # =================================================
+    # 列表加载（由 QueryPanel 调用）
+    # =================================================
     def load(self, rows):
-        """rows: [(title, source, region, published, link), ...]"""
         self.data = rows or []
         self.listbox.delete(0, tk.END)
+
         for r in self.data:
             self.listbox.insert(tk.END, r[0])
 
-        # 自动显示第一条（提升体验）
+        # 自动选中第一条（体验更好）
         if self.data:
-            self.listbox.selection_clear(0, tk.END)
             self.listbox.selection_set(0)
-            self.listbox.activate(0)
             self.show_detail(None)
 
+    # =================================================
+    # 点击新闻（UI 线程）
+    # =================================================
     def show_detail(self, _):
         if not self.listbox.curselection():
             return
@@ -85,28 +128,160 @@ class ResultPanel(tk.Frame):
         idx = self.listbox.curselection()[0]
         title, source, region, published, link = self.data[idx]
 
-        zh = translate(title)
+        # 1️⃣ 先从数据库拿文章
+        article = get_article_by_link(link)
+        if not article:
+            return
+
+        self.current_article = article
+
+        # 2️⃣ 立即渲染（已有内容 or 占位）
+        self.render_current_article()
+
+        # 3️⃣ 后台抓取英文正文（避免阻塞 UI）
+        self._ensure_content_en(article)
+
+        # 4️⃣ 🔥 按需触发翻译（后台）
+        self.ensure_translation_for_current_article()
+
+    # =================================================
+    # UI 线程：根据翻译模式渲染正文（唯一入口）
+    # =================================================
+    def render_current_article(self):
+        if not self.current_article:
+            return
+
+        article = self.current_article
+        content_en = article.get("content_en", "")
+        content_zh = article.get("content_zh", "")
+
+        mode = AppSettings.translate_mode
+
+        if mode == "en_zh":
+            text = content_en or "[Loading English content...]"
+            if content_zh:
+                text += "\n\n" + content_zh
+
+        elif mode == "zh_only":
+            text = content_zh or "[No Chinese translation yet]"
+
+        elif mode == "zh_en":
+            text = ""
+            if content_zh:
+                text += content_zh + "\n\n"
+            text += content_en or "[Loading English content...]"
+
+        else:
+            text = content_en or "[Loading English content...]"
 
         self.text.delete("1.0", tk.END)
+        self.text.insert(tk.END, article["title"] + "\n\n", "title")
+        self.text.insert(tk.END, text)
 
-        self.text.insert(tk.END, title + "\n", "title")
-        self.text.insert(tk.END, zh + "\n\n", "zh")
+    # =================================================
+    # 统一翻译触发入口
+    # =================================================
+    def ensure_translation_for_current_article(self):
+        """
+        判断当前文章是否需要翻译，并在后台触发。
+        - 仅在需要中文且开启自动翻译时触发
+        - 不重复翻译同一篇文章
+        """
+        article = self.current_article
+        if not article:
+            return
 
-        self.text.insert(
-            tk.END,
-            "📄 Full article content not fetched yet.\n",
-            "hint"
-        )
-        self.text.insert(
-            tk.END,
-            "🔗 Open original link:\n",
-            "meta"
-        )
-        self.text.insert(tk.END, link + "\n", "link")
+        needs_chinese = AppSettings.translate_mode in {"en_zh", "zh_only", "zh_en"}
+        if not needs_chinese or not AppSettings.auto_translate:
+            return
 
-        self.text.tag_config("title", font=("Segoe UI", 14, "bold"))
-        self.text.tag_config("zh", font=("Segoe UI", 12))
-        self.text.tag_config("hint", foreground="#888888")
-        self.text.tag_config("meta", foreground="#aaaaaa")
-        self.text.tag_config("link", foreground="#4ea1ff", underline=True)
+        if not article.get("content_en"):
+            return
 
+        if article.get("content_zh"):
+            return
+
+        link = article.get("link")
+        if not link or self._translating_link == link:
+            return
+
+        self._translating_link = link
+        Thread(
+            target=self._translate_and_save_bg,
+            args=(article,),
+            daemon=True,
+        ).start()
+
+    # =================================================
+    # 后台线程：翻译 + 存库 + 回 UI
+    # =================================================
+    def _translate_and_save_bg(self, article):
+        try:
+            zh_result = translate_en_zh(article["content_en"], link=article.get("link"))
+            content_to_save = zh_result.text
+            if zh_result.note:
+                content_to_save = f"[Partial translation] {zh_result.note}\\n\\n{zh_result.text}"
+
+            def apply_translation():
+                # 写数据库前再次确认结果有效
+                if not content_to_save or not content_to_save.strip():
+                    return
+                if zh_result.translation_status == "success":
+                    save_article_zh(article["link"], content_to_save)
+                article["content_zh"] = content_to_save
+                self.render_current_article()
+
+            # 3️⃣ 回主线程刷新显示（立即生效）
+            self.after(0, apply_translation)
+
+        except TranslationError as e:
+            article["content_zh"] = str(e)
+            save_article_zh(article["link"], str(e))
+            self.after(0, self.render_current_article)
+        except Exception as e:
+            print("Translation failed:", e)
+        finally:
+            self._translating_link = None
+
+    # =================================================
+    # 内容抓取（后台），完成后统一触发翻译检查
+    # =================================================
+    def _fetch_content_bg(self, article):
+        link = article.get("link")
+        if not link:
+            return
+        try:
+            content_en = fetch_article_content(link)
+            if not content_en:
+                content_en = "[Failed to fetch article content]"
+            save_article_en(link, content_en)
+
+            def update_article():
+                article["content_en"] = content_en
+                self.render_current_article()
+                self.ensure_translation_for_current_article()
+
+            self.after(0, update_article)
+        except Exception as e:
+            print("Fetch content failed:", e)
+        finally:
+            if link in self._fetching_links:
+                self._fetching_links.remove(link)
+
+    # =================================================
+    # 启动后台抓取英文正文
+    # =================================================
+    def _ensure_content_en(self, article):
+        if article.get("content_en"):
+            return
+
+        link = article.get("link")
+        if not link or link in self._fetching_links:
+            return
+
+        self._fetching_links.add(link)
+        Thread(
+            target=self._fetch_content_bg,
+            args=(article,),
+            daemon=True,
+        ).start()
